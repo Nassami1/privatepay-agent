@@ -1,0 +1,33 @@
+{
+  "name": "privatepay-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PrivatePay Agent - confidential invoice processing with TEE attestation, on-chain spending policy and constrained settlement on NEAR",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "demo:success": "tsx scripts/demo-success.ts",
+    "demo:blocked": "tsx scripts/demo-blocked.ts",
+    "verify:attestation": "tsx scripts/verify-attestation.ts",
+    "verify:key": "tsx scripts/verify-key.ts",
+    "contract:build": "sh scripts/build-contract.sh",
+    "contract:deploy": "tsx scripts/deploy-contract.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "dev": "tsx scripts/serve.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "demo:denied": "tsx scripts/demo-denied.ts",
+    "submission:check": "tsx scripts/check-submission.ts"
+  },
+  "dependencies": {
+    "near-api-js": "5.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

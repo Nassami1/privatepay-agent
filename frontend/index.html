@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PrivatePay Agent — payment dossier</title>
+    <meta
+      name="description"
+      content="A confidential payment agent: TEE-attested invoice extraction, an on-chain spending cap and whitelist, and constrained settlement."
+    />
+    <meta name="theme-color" content="#efe8da" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#ledger">Skip to ledger</a>
+    <div class="grain" aria-hidden="true"></div>
+
+    <aside class="spine" aria-hidden="true">
+      <span class="spine__mark">PrivatePay&nbsp;&nbsp;Agent</span>
+      <svg class="seal" viewBox="0 0 100 100" role="presentation">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-width="0.8" />
+        <circle
+          cx="50"
+          cy="50"
+          r="37"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="0.4"
+          stroke-dasharray="1.5 4"
+        />
+        <text x="50" y="58" text-anchor="middle" font-size="21" font-style="italic">PPA</text>
+      </svg>
+      <span class="spine__tail">TEE · POLICY · INTENTS</span>
+    </aside>
+
+    <div class="page">
+      <header class="masthead reveal" style="--i: 0">
+        <div class="masthead__left">
+          <p class="eyebrow">NEAR Hackathon 2026 · Privacy / Security / Agents</p>
+          <h1>PrivatePay <em>Agent</em></h1>
+          <p class="thesis">
+            Sensitive invoices go in. A capped, whitelisted payment comes out. The attestation
+            shows where the thinking happened — the chain shows what the agent was allowed to do.
+          </p>
+        </div>
+        <div class="masthead__file">
+          <span class="file-label">Case file</span>
+          <span class="file-id" id="file-id">PPA-00000000</span>
+          <dl class="file-meta">
+            <div><dt>Network</dt><dd id="meta-network">testnet</dd></div>
+            <div><dt>Contract</dt><dd id="meta-contract">not configured</dd></div>
+            <div><dt>Updated</dt><dd id="meta-time">—</dd></div>
+            <div><dt>Settlement</dt><dd id="meta-settlement">—</dd></div>
+          </dl>
+          <div id="status-stamp" class="stamp stamp--guard">Awaiting run</div>
+        </div>
+      </header>
+
+      <section class="chain reveal" id="chain" style="--i: 1" aria-label="Trust chain">
+        <!-- rendered by app.js -->
+      </section>
+
+      <main class="desk">
+        <section class="ledger" id="ledger" aria-labelledby="ledger-title">
+          <div class="section-head">
+            <div>
+              <h2 id="ledger-title">The ledger</h2>
+              <p class="lede">
+                One line per invoice the agent tried to pay. Open
+                <em>evidence</em> for the attestation, the policy receipt and the settlement.
+              </p>
+            </div>
+            <div class="ledger-tools">
+              <span class="watch" id="watch" data-off="true">watching · 5s</span>
+              <div class="filters" role="group" aria-label="Filter payments">
+              <button class="filter is-active" data-filter="all" aria-pressed="true">
+                All <span class="filter__count" data-count="all">0</span>
+              </button>
+              <button class="filter" data-filter="ok" aria-pressed="false">
+                Authorised <span class="filter__count" data-count="ok">0</span>
+              </button>
+              <button class="filter" data-filter="no" aria-pressed="false">
+                Refused <span class="filter__count" data-count="no">0</span>
+              </button>
+              </div>
+            </div>
+          </div>
+
+          <div id="ledger-list" class="entries" aria-live="polite"></div>
+
+          <div id="empty" class="empty" hidden>
+            <p class="empty__title">No entries in this dossier yet.</p>
+            <p>Run the demo, then reload this page:</p>
+            <pre><code>npm run demo:success
+npm run demo:blocked</code></pre>
+            <p class="empty__hint">
+              This page polls <code>data/dashboard.json</code> every five seconds, so it fills
+              itself in.
+            </p>
+          </div>
+        </section>
+
+        <aside class="instruments" aria-label="Policy and evidence">
+          <section class="card card--policy reveal" id="policy-card" style="--i: 2"></section>
+          <section class="card card--evidence reveal" id="tee-card" style="--i: 3"></section>
+          <section class="card card--chain reveal" id="chain-card" style="--i: 4"></section>
+        </aside>
+      </main>
+
+      <footer class="colophon">
+        <p>
+          <strong>What this page does not store:</strong> invoice bodies. Only references,
+          amounts, recipients, decisions and evidence digests.
+        </p>
+        <p class="colophon__links">
+          <a href="https://cloud.near.ai/verify" target="_blank" rel="noreferrer"
+            >NEAR AI verification center</a
+          >
+          <span aria-hidden="true">·</span>
+          <a href="https://testnet.nearblocks.io" target="_blank" rel="noreferrer"
+            >testnet explorer</a
+          >
+          <span aria-hidden="true">·</span>
+          <a href="https://docs.near.ai/cloud/verification/" target="_blank" rel="noreferrer"
+            >attestation docs</a
+          >
+        </p>
+        <p class="colophon__fine">
+          Policy enforcement and TEE attestation are real on this build. Settlement is simulated
+          unless a live 1-Click quote is configured; simulated values are prefixed
+          <code>SIMULATED_</code>.
+        </p>
+      </footer>
+    </div>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

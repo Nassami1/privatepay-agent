@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+# build output
+dist/
+contracts/policy/target/
+*.tsbuildinfo
+# secrets & local toolchain
+.env
+.env.*
+!.env.example
+.keys/
+.toolchain/
+.scratch/
+# generated demo artifacts
+artifacts/*
+!artifacts/.gitkeep
+frontend/data/*.json
+!frontend/data/.gitkeep
+# os
+.DS_Store
+
+# submission answers (personal data)
+submission/payload.json
