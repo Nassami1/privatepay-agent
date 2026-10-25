@@ -3,15 +3,24 @@
 export type PolicyMode = 'testnet' | 'local';
 
 export interface PolicyState {
-  capUsdc: number;
-  spentTodayUsdc: number;
+  ownerId: string | null;
+  agentId: string | null;
+  tokenId: string | null;
+  capMicroUsdc: bigint;
+  spentTodayMicroUsdc: bigint;
   whitelist: string[];
+  paidInvoices: number;
   mode: PolicyMode;
   /** Contract account id, or `null` in local simulation mode. */
   contractId: string | null;
 }
 
-export type BlockReason = 'OVER_LIMIT' | 'NOT_WHITELISTED';
+export type BlockReason =
+  | 'OVER_LIMIT'
+  | 'NOT_WHITELISTED'
+  | 'DUPLICATE_INVOICE'
+  | 'ZERO_AMOUNT'
+  | 'INVALID_INVOICE_REF';
 
 export type PayOutcome =
   | { ok: true; tx: string; chainTx?: string }
@@ -19,16 +28,22 @@ export type PayOutcome =
 
 export interface PayRequest {
   to: string;
-  amountUsdc: number;
+  amountMicroUsdc: bigint;
   invoiceRef: string;
 }
 
-export type LogResult = 'SUCCESS' | 'BLOCKED_OVER_LIMIT' | 'BLOCKED_NOT_WHITELISTED';
+export type LogResult =
+  | 'SUCCESS'
+  | 'BLOCKED_OVER_LIMIT'
+  | 'BLOCKED_NOT_WHITELISTED'
+  | 'BLOCKED_DUPLICATE_INVOICE'
+  | 'BLOCKED_ZERO_AMOUNT'
+  | 'BLOCKED_INVALID_INVOICE_REF';
 
 export interface PolicyLogEntry {
   invoiceRef: string;
   to: string;
-  amountUsdc: number;
+  amountMicroUsdc: bigint;
   result: LogResult;
   ts: string;
 }
@@ -42,7 +57,7 @@ export interface PolicyClient {
 }
 
 export interface TeeDecision {
-  amountUsdc: number;
+  amountMicroUsdc: bigint;
   recipient: string;
   invoiceRef: string;
   purpose: string;
@@ -80,6 +95,14 @@ export interface AttestationEvidence {
   };
 }
 
+export interface SignatureEvidence {
+  kind: 'provider_tee' | 'gateway';
+  signer: string;
+  algorithm: 'ecdsa' | 'ed25519';
+  text: string;
+  verified: boolean;
+}
+
 export interface RedactionResult {
   redactedText: string;
   redactedFields: string[];
@@ -93,9 +116,39 @@ export interface TeeRun {
   decision: TeeDecision;
   attestation: AttestationEvidence;
   redaction: RedactionResult;
+  attestationCached: boolean;
+  signature: SignatureEvidence | null;
   fallbackReason?: string;
-  /** Full attestation report for real runs; archived as an artifact, never printed. */
-  rawReport?: unknown;
+  /** Pretty-printed report; the digest is over exactly this string. */
+  rawReportJson?: string;
+}
+
+export type AttemptOutcome =
+  | LogResult
+  | 'HELD_FOR_REVIEW'
+  | 'BLOCKED_TEE_UNAVAILABLE'
+  | 'BLOCKED_UNVERIFIED_OUTPUT'
+  | 'BLOCKED_HUMAN_APPROVAL_REQUIRED';
+
+export interface PaymentAttemptRecord {
+  invoiceRef: string;
+  to: string;
+  amountMicroUsdc: bigint;
+  result: AttemptOutcome;
+  policyTx: string | null;
+  onChainTx: string | null;
+  riskFlags: string[];
+  /** Provenance of the decision that produced this attempt. */
+  teeMode: 'real' | 'simulated';
+  attestationMode: 'real' | 'simulated';
+  teeModel: string;
+  attestationDigest: string | null;
+  redactedFields: string[];
+  signatureKind: 'provider_tee' | 'gateway' | null;
+  signatureVerified: boolean;
+  ftBalanceAfterMicro?: bigint;
+  /** Local reason for a hold or a validation failure; never sensitive. */
+  detail?: string;
 }
 
 export interface KeyGuardCheck {
@@ -113,32 +166,6 @@ export interface KeyGuardResult {
   checks: KeyGuardCheck[];
 }
 
-export interface Settlement {
-  mode: 'live' | 'simulated';
-  txId: string;
-  amountOut?: string;
-  quoteId?: string;
-  reason?: string;
-  quoted?: boolean;
-}
-
-export interface PaymentAttemptRecord {
-  invoiceRef: string;
-  to: string;
-  amountUsdc: number;
-  result: LogResult;
-  policyTx: string | null;
-  onChainTx: string | null;
-  settlement: Settlement | null;
-  riskFlags: string[];
-  /** Provenance of the decision that produced this attempt. */
-  teeMode: 'real' | 'simulated';
-  attestationMode: 'real' | 'simulated';
-  teeModel: string;
-  attestationDigest: string | null;
-  redactedFields: string[];
-}
-
 export interface DemoRunRecord {
   runId: string;
   demo: 'success' | 'blocked';
@@ -152,12 +179,19 @@ export interface DemoRunRecord {
     after: PolicyState | null;
     log: PolicyLogEntry[];
   };
+  ft: {
+    tokenId: string | null;
+    policyBalanceMicro: bigint;
+    aliceBalanceMicro: bigint;
+  };
   tee: {
     mode: 'real' | 'simulated';
     model: string;
     attestation: AttestationEvidence;
     redactedFields: string[];
     latencyMs: number;
+    cached: boolean;
+    signature: SignatureEvidence | null;
     fallbackReason?: string;
   };
   attempts: PaymentAttemptRecord[];

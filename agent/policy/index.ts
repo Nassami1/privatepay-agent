@@ -1,5 +1,6 @@
 /** Chooses the enforcement backend: deployed testnet contract or local mirror. */
 
+import { MICRO_PER_USDC } from '../amount.js';
 import { hasLivePolicy, type Config } from '../config.js';
 import type { PolicyClient } from '../types.js';
 import { LocalPolicy } from './local.js';
@@ -10,7 +11,7 @@ export async function createPolicy(config: Config): Promise<PolicyClient> {
     return TestnetPolicy.create(config);
   }
   return new LocalPolicy({
-    capUsdc: config.demo.dailyCapUsdc,
+    capMicroUsdc: BigInt(config.demo.dailyCapUsdc) * MICRO_PER_USDC,
     whitelist: [config.demo.whitelistRecipient],
   });
 }

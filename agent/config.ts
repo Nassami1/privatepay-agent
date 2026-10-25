@@ -26,11 +26,6 @@ export interface NearAiConfig {
   model: string | null;
 }
 
-export interface IntentsConfig {
-  apiUrl: string | null;
-  usdcAsset: string | null;
-}
-
 export interface DemoConfig {
   dailyCapUsdc: number;
   whitelistRecipient: string;
@@ -39,7 +34,6 @@ export interface DemoConfig {
 export interface Config {
   near: NearConfig;
   nearAi: NearAiConfig;
-  intents: IntentsConfig;
   demo: DemoConfig;
   /** Absolute path of the repository root used for artifacts. */
   rootDir: string;
@@ -127,13 +121,9 @@ export function loadConfig(): Config {
       baseUrl: normalizeNearAiBase(env('NEAR_AI_CLOUD_BASE_URL') ?? DEFAULT_NEAR_AI_BASE),
       model: env('NEAR_AI_CLOUD_MODEL'),
     },
-    intents: {
-      apiUrl: env('INTENTS_API_URL'),
-      usdcAsset: env('INTENTS_ASSET_USDC_TESTNET'),
-    },
     demo: {
       dailyCapUsdc: intEnv('DAILY_CAP_USDC', 10),
-      whitelistRecipient: env('WHITELIST_RECIPIENT') ?? 'alice.testnet',
+      whitelistRecipient: env('WHITELIST_RECIPIENT') ?? 'alice.samimmi.testnet',
     },
     rootDir: process.cwd(),
   };

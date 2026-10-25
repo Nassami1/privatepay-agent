@@ -6,9 +6,8 @@
  *   real       — a report fetched from NEAR AI Cloud. We check the structural
  *                bindings a client can check without a DCAP verifier (nonce
  *                echo, quote presence, model identity, signing address) and
- *                archive the raw report + SHA-256 digest so the official
- *                verifier can re-check it. We do NOT claim to have validated
- *                the Intel TDX quote ourselves.
+ *                archive the exact report bytes. The SHA-256 digest is computed
+ *                over the archived string, so `sha256sum` reproduces it.
  *   simulated  — no TEE call happened. The object says so in `mode`, in
  *                `disclaimer`, and in every log line that prints it.
  */
@@ -84,11 +83,12 @@ function asString(value: unknown): string | undefined {
 }
 
 /**
- * Structural verification. Returns evidence plus the raw report so the caller
- * can archive it; throws when a binding the client relies on is missing.
+ * Structural verification. `reportJson` must be the exact text that is archived;
+ * the digest is over those bytes.
  */
 export function verifyAttestationReport(input: {
   report: unknown;
+  reportJson: string;
   nonce: string;
   model: string;
   redaction: RedactionResult;
@@ -127,8 +127,7 @@ export function verifyAttestationReport(input: {
       : 'report nonce does not match the client nonce',
   );
 
-  const eventLog = gateway?.event_log;
-  const eventLogEntries = countEventLogEntries(eventLog);
+  const eventLogEntries = countEventLogEntries(gateway?.event_log);
   add(
     'event_log_present',
     eventLogEntries > 0,
@@ -170,12 +169,11 @@ export function verifyAttestationReport(input: {
   }
 
   const gatewayInfo = (gateway?.info ?? {}) as Record<string, unknown>;
-  const modelInfo = (modelReport?.info ?? {}) as Record<string, unknown>;
   const evidence: AttestationEvidence = {
     mode: 'real',
     model: input.model,
     createdAt: input.fetchedAt ?? new Date().toISOString(),
-    digest: sha256Hex(JSON.stringify(input.report)),
+    digest: sha256Hex(input.reportJson),
     verificationUrl: NEAR_AI_VERIFICATION_URL,
     disclaimer:
       'Real NEAR AI Cloud attestation report. Structural bindings were checked client-side; full Intel TDX/NVIDIA quote verification is delegated to the official verifier and the archived report digest.',
@@ -217,10 +215,4 @@ function countEventLogEntries(eventLog: unknown): number {
     }
   }
   return 0;
-}
-
-/** Fields are read from the model info without depending on a fixed schema. */
-export function modelInfoOf(report: unknown): Record<string, unknown> {
-  const raw = report as RawReportShape;
-  return (raw.model_attestations?.[0]?.info ?? {}) as Record<string, unknown>;
 }

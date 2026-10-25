@@ -47,6 +47,12 @@ export interface AccessKeyView {
   permission: AccessKeyPermissionView;
 }
 
+export interface AccountView {
+  amount: string;
+  code_hash: string;
+  storage_usage: number;
+}
+
 export interface NetworkStatus {
   chainId: string;
   protocolVersion: number;
@@ -107,6 +113,18 @@ export async function viewFunction<T>(
   const text = Buffer.from(Uint8Array.from(response.result)).toString('utf8');
   if (text.trim() === '') return null as T;
   return JSON.parse(text) as T;
+}
+
+export async function viewAccount(accountId: string): Promise<AccountView | null> {
+  try {
+    return await rpc<AccountView>('query', {
+      request_type: 'view_account',
+      finality: 'final',
+      account_id: accountId,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export async function viewAccessKey(

@@ -6,14 +6,62 @@
  * with a wallet" and "an agent with a permission slip": even if the agent is
  * fully compromised, the key cannot move funds, change the cap, or touch any
  * other contract.
+ *
+ * `assessAccessKey` is pure so the rules can be tested without the network.
  */
 
 import { KeyPair } from 'near-api-js';
 import type { Config } from './config.js';
 import type { KeyGuardCheck, KeyGuardResult } from './types.js';
 import { isFunctionCallPermission, viewAccessKey } from './near/rpc.js';
+import type { AccessKeyPermissionView } from './near/rpc.js';
 
-const POLICY_MUTATORS = ['set_daily_cap', 'add_to_whitelist', 'remove_from_whitelist', 'reset_spent'];
+const POLICY_MUTATORS = [
+  'set_daily_cap',
+  'add_to_whitelist',
+  'remove_from_whitelist',
+  'reset_spent',
+];
+
+export function assessAccessKey(
+  permission: AccessKeyPermissionView,
+  contractId: string,
+): KeyGuardCheck[] {
+  const checks: KeyGuardCheck[] = [];
+  const isFunctionCall = isFunctionCallPermission(permission);
+  checks.push({
+    name: 'not_full_access',
+    ok: isFunctionCall,
+    detail: isFunctionCall ? 'key is a Function Call Key' : 'key has FullAccess — refused',
+  });
+  if (!isFunctionCall) return checks;
+
+  const scoped = permission.FunctionCall;
+  checks.push({
+    name: 'receiver_scoped',
+    ok: scoped.receiver_id === contractId,
+    detail: `receiver_id=${scoped.receiver_id} (required: ${contractId})`,
+  });
+  checks.push({
+    name: 'only_try_pay',
+    ok: scoped.method_names.length === 1 && scoped.method_names[0] === 'try_pay',
+    detail: `method_names=[${scoped.method_names.join(', ')}] (required: [try_pay])`,
+  });
+  checks.push({
+    name: 'no_policy_mutators',
+    ok: scoped.method_names.every((method: string) => !POLICY_MUTATORS.includes(method)),
+    detail: 'key cannot change cap, whitelist, or spent counter',
+  });
+  checks.push({
+    name: 'has_gas_allowance',
+    ok: scoped.allowance !== null && BigInt(scoped.allowance) > 0n,
+    detail:
+      scoped.allowance === null
+        ? 'no allowance set (unlimited gas spending for this key)'
+        : `allowance=${formatNear(scoped.allowance)} NEAR`,
+  });
+  return checks;
+}
 
 export async function checkAgentKey(config: Config): Promise<KeyGuardResult> {
   const { accountId, agentKey, policyContractId } = config.near;
@@ -46,49 +94,10 @@ export async function checkAgentKey(config: Config): Promise<KeyGuardResult> {
 
   try {
     const accessKey = await viewAccessKey(accountId, publicKey);
-    const permission = accessKey.permission;
-    const checks: KeyGuardCheck[] = [];
-
-    const isFunctionCall = isFunctionCallPermission(permission);
-    checks.push({
-      name: 'not_full_access',
-      ok: isFunctionCall,
-      detail: isFunctionCall ? 'key is a Function Call Key' : 'key has FullAccess — refused',
-    });
-
-    if (!isFunctionCall) {
-      return { checked: true, ok: false, accountId, publicKey, contractId: policyContractId, checks };
-    }
-
-    const scoped = permission.FunctionCall;
-    checks.push({
-      name: 'receiver_scoped',
-      ok: scoped.receiver_id === policyContractId,
-      detail: `receiver_id=${scoped.receiver_id} (required: ${policyContractId})`,
-    });
-    checks.push({
-      name: 'only_try_pay',
-      ok:
-        scoped.method_names.length === 1 && scoped.method_names[0] === 'try_pay',
-      detail: `method_names=[${scoped.method_names.join(', ')}] (required: [try_pay])`,
-    });
-    checks.push({
-      name: 'no_policy_mutators',
-      ok: scoped.method_names.every((method: string) => !POLICY_MUTATORS.includes(method)),
-      detail: 'key cannot change cap, whitelist, or spent counter',
-    });
-    checks.push({
-      name: 'has_gas_allowance',
-      ok: scoped.allowance !== null && BigInt(scoped.allowance) > 0n,
-      detail:
-        scoped.allowance === null
-          ? 'no allowance set (unlimited gas spending for this key)'
-          : `allowance=${formatNear(scoped.allowance)} NEAR`,
-    });
-
+    const checks = assessAccessKey(accessKey.permission, policyContractId);
     return {
       checked: true,
-      ok: checks.every((check) => check.ok),
+      ok: checks.length > 0 && checks.every((check) => check.ok),
       accountId,
       publicKey,
       contractId: policyContractId,
@@ -113,6 +122,8 @@ export async function checkAgentKey(config: Config): Promise<KeyGuardResult> {
 }
 
 function formatNear(yocto: string): string {
-  const value = Number(BigInt(yocto)) / 1e24;
-  return value.toFixed(2);
+  const value = BigInt(yocto);
+  const whole = value / 1_000_000_000_000_000_000_000_000n;
+  const fraction = (value % 1_000_000_000_000_000_000_000_000n) / 10_000_000_000_000_000_000_000n;
+  return `${whole}.${fraction.toString().padStart(2, '0')}`;
 }

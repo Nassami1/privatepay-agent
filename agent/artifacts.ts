@@ -3,11 +3,11 @@
  *
  * The static dashboard reads `frontend/data/dashboard.json`; the same document
  * is copied to `artifacts/dashboard.json` so a judge can inspect it without a
- * server. Runs are appended newest-first so the success and blocked demos can
- * be recorded in either order.
+ * server. BigInt values are serialized as decimal strings so JSON stays exact.
  *
- * Raw attestation reports are archived separately: they are large (hundreds of
- * KB) and the dashboard only needs the verified summary.
+ * Raw attestation reports are archived separately and written verbatim: the
+ * SHA-256 digest in the evidence is over exactly those bytes, so `sha256sum`
+ * reproduces it.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -34,7 +34,7 @@ export interface ArtifactPaths {
 export async function writeDemoArtifacts(
   rootDir: string,
   run: DemoRunRecord,
-  rawAttestation?: unknown,
+  rawEvidenceJson?: string,
 ): Promise<ArtifactPaths> {
   const artifactsDir = join(rootDir, 'artifacts');
   const dashboardDir = join(rootDir, 'frontend', 'data');
@@ -53,20 +53,29 @@ export async function writeDemoArtifacts(
     runs: [run, ...existing.runs].slice(0, DASHBOARD_RUN_LIMIT),
   };
 
-  const dashboardJson = `${JSON.stringify(dashboard, null, 2)}\n`;
+  const dashboardJson = jsonStringify(dashboard);
   await writeFile(dashboardPath, dashboardJson, 'utf8');
   await writeFile(join(artifactsDir, 'dashboard.json'), dashboardJson, 'utf8');
 
   const runPath = join(artifactsDir, `run-${run.runId}.json`);
-  await writeFile(runPath, `${JSON.stringify(run, null, 2)}\n`, 'utf8');
+  await writeFile(runPath, jsonStringify(run), 'utf8');
 
   let attestationPath: string | null = null;
-  if (rawAttestation !== undefined) {
+  if (rawEvidenceJson !== undefined) {
     attestationPath = join(artifactsDir, `attestation-${run.runId}.json`);
-    await writeFile(attestationPath, `${JSON.stringify(rawAttestation, null, 2)}\n`, 'utf8');
+    await writeFile(attestationPath, rawEvidenceJson, 'utf8');
   }
 
   return { dashboard: dashboardPath, run: runPath, attestation: attestationPath };
+}
+
+/** BigInt-aware, 2-space JSON with a trailing newline. */
+export function jsonStringify(value: unknown): string {
+  return `${JSON.stringify(
+    value,
+    (_key, entry: unknown) => (typeof entry === 'bigint' ? entry.toString() : entry),
+    2,
+  )}\n`;
 }
 
 async function readDashboard(path: string): Promise<DashboardFile> {

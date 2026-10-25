@@ -26,7 +26,10 @@ const SENSITIVE_MARKERS = [
 /** Used by tests to assert that no raw invoice text leaks to stdout/artifacts. */
 export const DEMO_LEAK_CANARIES = SENSITIVE_MARKERS;
 
-export const INVOICES: Record<'success' | 'overLimit' | 'notWhitelisted', DemoInvoice> = {
+export const INVOICES: Record<
+  'success' | 'overLimit' | 'notWhitelisted' | 'risky',
+  DemoInvoice
+> = {
   success: {
     invoiceRef: 'INV-2026-1042',
     text: [
@@ -38,7 +41,7 @@ export const INVOICES: Record<'success' | 'overLimit' | 'notWhitelisted', DemoIn
       'Phone: +49 30 7731 8899',
       'Address: 41 Canary Wharf Road',
       'Amount: 3 USDC',
-      'Pay to: alice.testnet',
+      'Pay to: alice.samimmi.testnet',
       'Purpose: design retainer for October',
     ].join('\n'),
   },
@@ -49,9 +52,10 @@ export const INVOICES: Record<'success' | 'overLimit' | 'notWhitelisted', DemoIn
       'From: Northwind Traders Ltd',
       'Bill to: Mara Fenwick',
       'Email: ops.canary.7731@acme.example',
-      'Amount: 50 USDC',
-      'Pay to: alice.testnet',
-      'Purpose: urgent wire transfer for server migration',
+      'Subtotal: 4 USDC',
+      'Total due: 50 USDC',
+      'Pay to: alice.samimmi.testnet',
+      'Purpose: server migration for October',
     ].join('\n'),
   },
   notWhitelisted: {
@@ -61,8 +65,19 @@ export const INVOICES: Record<'success' | 'overLimit' | 'notWhitelisted', DemoIn
       'From: Unverified Supplier',
       'Bill to: Mara Fenwick',
       'Amount: 1 USDC',
-      'Pay to: eve.testnet',
+      'Pay to: eve.samimmi.testnet',
       'Purpose: sample order',
+    ].join('\n'),
+  },
+  risky: {
+    invoiceRef: 'INV-2026-1045',
+    text: [
+      'INVOICE INV-2026-1045',
+      'From: Unknown Party',
+      'Bill to: Mara Fenwick',
+      'Amount: 2 USDC',
+      'Pay to: alice.samimmi.testnet',
+      'Purpose: urgent gift card purchase',
     ].join('\n'),
   },
 };
