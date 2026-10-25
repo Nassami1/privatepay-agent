@@ -1,60 +1,94 @@
 # Policy contract
 
-On-chain spending policy for the PrivatePay Agent. Rust + `near-sdk` 5.29.1,
+On-chain spending policy with real FT settlement. Rust + `near-sdk` 5.29.1,
 deployed to NEAR **testnet** only.
 
-The contract is the authority for two facts an autonomous payment agent must
-not control itself: the daily cap and the recipient whitelist. It also keeps a
-bounded, append-only log of every attempt, allowed or refused.
+The contract holds the test tUSDC, checks that the caller is the configured
+agent, enforces the daily cap and the recipient whitelist, refuses duplicate
+invoice references, and performs the `ft_transfer` itself. The agent has no
+token balance and no key that can reach the token contract.
 
 Nothing sensitive is stored: `invoice_ref` is an opaque reference. Invoice text
 never reaches the chain.
 
+## State
+
+| Field | Meaning |
+| --- | --- |
+| `owner` | Human account; only it can change policy. |
+| `agent_id` | The only account allowed to call `try_pay`. Must differ from `owner`. |
+| `token_id` | NEP-141 test token contract. |
+| `daily_cap_micro_usdc` | Daily cap in micro-USDC (`u128`, 6 decimals). |
+| `spent_today_micro_usdc` | Rolling spend for the current UTC day. |
+| `day` | Days since the Unix epoch. |
+| `whitelist` | `IterableSet<AccountId>` of allowed recipients. |
+| `paid_invoices` | `IterableSet<String>` of invoice refs already paid once. |
+| `log` | `Vector<Attempt>` with the bounded view of the audit trail. |
+
 ## Interface
 
-| Method | Type | Input | Output | Rule |
-| --- | --- | --- | --- | --- |
-| `new` | init | `{"owner":"acct.testnet","cap_usdc":10}` | state | Called once at deploy. |
-| `set_daily_cap` | call | `{"cap_usdc":10}` | `{"ok":true,"cap_usdc":10}` | Owner only. Overwrites the cap. |
-| `add_to_whitelist` | call | `{"account_id":"alice.testnet"}` | `{"ok":true}` | Owner only. Idempotent. |
-| `remove_from_whitelist` | call | `{"account_id":"alice.testnet"}` | `{"ok":true}` | Owner only. No-op if absent. |
-| `try_pay` | call | `{"to":"alice.testnet","amount_usdc":3,"invoice_ref":"INV-001"}` | `{"ok":true,"tx":"policy:<hex>"}` or `{"ok":false,"reason":"OVER_LIMIT"\|"NOT_WHITELISTED"}` | The only method the agent key may call. Never throws on a policy decision. |
-| `get_policy` | view | `{}` | `{"cap_usdc":10,"spent_today_usdc":3,"whitelist":["alice.testnet"]}` | — |
-| `get_log` | view | `{"limit":20}` | `[{"invoice_ref":"INV-001","to":"alice.testnet","amount_usdc":3,"result":"SUCCESS","ts":"2026-10-24T15:11:12Z"}]` | Newest last. Bounded at 200 entries. |
-| `reset_spent` | call | `{}` | `{"ok":true}` | Owner only, demo/ops helper. The agent key cannot call it. |
+| Method | Type | Input | Output |
+| --- | --- | --- | --- |
+| `new` | init | `{"owner":"samimmi.testnet","agent_id":"agent.samimmi.testnet","token_id":"usdc.samimmi.testnet","cap_micro_usdc":"10000000"}` | state |
+| `set_daily_cap` | call | `{"cap_micro_usdc":"10000000"}` | `{"ok":true,"cap_micro_usdc":"10000000"}` |
+| `add_to_whitelist` | call | `{"account_id":"alice.samimmi.testnet"}` | `{"ok":true}` |
+| `remove_from_whitelist` | call | `{"account_id":"alice.samimmi.testnet"}` | `{"ok":true}` |
+| `try_pay` | call | `{"to":"alice.samimmi.testnet","amount_micro_usdc":"3000000","invoice_ref":"INV-001"}` | `{"ok":true,"tx":"policy:<hex>"}` or `{"ok":false,"reason":"..."}` |
+| `get_policy` | view | `{}` | owner, agent, token, cap, spent, whitelist, paid count |
+| `get_log` | view | `{"limit":20}` | newest-last attempts |
+| `reset_spent` | call | `{}` | `{"ok":true}` |
 
-`result` is one of `SUCCESS`, `BLOCKED_OVER_LIMIT`, `BLOCKED_NOT_WHITELISTED`.
+Refusal reasons: `OVER_LIMIT`, `NOT_WHITELISTED`, `DUPLICATE_INVOICE`,
+`ZERO_AMOUNT`, `INVALID_INVOICE_REF`.
 
 ## Rules and ordering
 
-1. The daily counter rolls at UTC midnight (`block_timestamp / 86,400,000`).
-2. `try_pay` checks the whitelist **first**, then the cap. An unknown recipient
-   asking for an over-cap amount is reported as `NOT_WHITELISTED`; the recipient
-   boundary is the stronger one.
-3. A blocked attempt changes no balances and does not consume the cap, but it is
-   logged.
-4. Amounts are whole USDC demo units (`u32`), as specified for the prototype.
-5. `try_pay` is not `#[payable]`: attaching NEAR is rejected by the runtime.
+1. `try_pay` requires `predecessor_account_id == agent_id`; any other caller
+   panics. The owner cannot call it directly.
+2. Zero amounts and invoice references longer than 64 bytes are refused.
+3. A reference in `paid_invoices` is refused before any balance moves; a retry
+   after a timeout cannot pay twice.
+4. The whitelist is checked before the cap.
+5. The daily counter rolls at UTC midnight.
+6. On approval the contract records the attempt, marks the reference paid, and
+   calls `ft_transfer(receiver_id = to, amount, memo = invoice_ref)` on the token
+   contract with exactly 1 yoctoNEAR and 40 TGas.
+7. A blocked attempt is logged and emits a NEP-297 event, but moves no tokens.
+
+The contract is a gate **and** the payer: it is the only account with a token
+balance, and the agent's key is scoped to `try_pay` on this contract. Bypassing
+`try_pay` therefore does not expose a payment path.
+
+### Async note
+
+`try_pay` returns after scheduling the FT transfer. The transaction hash covers
+the transfer receipt; the agent reads the recipient balance after the
+transaction and treats a failed receipt as a settlement failure. Marking the
+reference paid before the transfer is the conservative choice: a failed transfer
+cannot be replayed silently, and the log records the approval for
+reconciliation.
 
 ## Access control
 
-* `owner` is checked with `env::predecessor_account_id()` on every mutator.
-* The deployed instance uses the contract account itself as owner.
-* The agent runs with a Function Call Key restricted to
-  `POLICY_CONTRACT_ID` + `try_pay` + a 0.5 NEAR gas allowance. It cannot call
-  any mutator, and `npm run demo:denied` proves that against the live network.
+* `owner` is checked on every mutator.
+* The deployed instance uses `samimmi.testnet` as owner and
+  `agent.samimmi.testnet` as agent.
+* The agent key is a Function Call Key restricted to `try_pay` on this contract
+  with a 0.5 NEAR gas allowance.
+* `npm run demo:denied` proves both directions against the live network: the
+  owner's `try_pay` transaction fails, and the agent's `set_daily_cap` call is
+  rejected by the access key before execution.
 
 ## Build
 
 ```sh
-npm run contract:build     # cargo build --target wasm32-unknown-unknown --release
+npm run contract:build
 ```
 
-Requires Rust with the `wasm32-unknown-unknown` target. This repository was
-built with `rustc 1.99.1`; `near-sdk 5.29.1` declares an MSRV of 1.95.
-The compiled artifact is committed at `build/privatepay_policy.wasm`
-(`sha256` recorded in the top-level README), so running the demo does not
-require Rust.
+Requires Rust with `wasm32-unknown-unknown` (built with `rustc 1.99.1`;
+`near-sdk 5.29.1` declares MSRV 1.95). The output is written to
+`build/privatepay_policy.wasm` and is intentionally not committed; run the build
+before `bootstrap:testnet`.
 
 ## Test
 
@@ -63,16 +97,18 @@ cd contracts/policy
 cargo test
 ```
 
-Covers the cap, whitelist ordering, no-spend-on-block, daily rollover, log
-ordering and limits, owner-only access, and the UTC formatter.
+Covers the agent-only check, owner-only mutators, cap, whitelist ordering,
+duplicate references, zero amount, invalid reference, daily rollover, reset, log
+ordering and the UTC formatter.
 
 ## Deploy
 
-```sh
-npm run contract:deploy            # deploy if needed + set demo policy + add agent key
-npm run contract:deploy -- --force # replace the wasm (storage is preserved)
-npm run demo:reset                 # owner-only: cap/whitelist reset + spent=0
-```
+The reproducible setup is `npm run bootstrap:testnet`; see the top-level README.
+It creates the accounts, deploys both contracts, mints tUSDC to the policy
+contract, whitelists the recipient and installs the agent key.
 
-Owner scripts read a full-access testnet key from `.keys/deployer.json`
-(gitignored; see the top-level README). The agent runtime never reads it.
+Owner operations:
+
+```sh
+npm run demo:reset   # cap, whitelist, spent=0, idempotency/log cleared
+```

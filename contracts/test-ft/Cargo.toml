@@ -1,0 +1,24 @@
+[package]
+name = "privatepay-test-ft"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal NEP-141 test token for the PrivatePay Agent demo (testnet only)"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "=5.29.1"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+[dev-dependencies]
+near-sdk = { version = "=5.29.1", features = ["unit-testing"] }

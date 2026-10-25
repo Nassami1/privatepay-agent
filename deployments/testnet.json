@@ -1,0 +1,14 @@
+{
+  "network": "testnet",
+  "owner": "samimmi.testnet",
+  "agent": "agent.samimmi.testnet",
+  "policy": "policy.samimmi.testnet",
+  "token": "usdc.samimmi.testnet",
+  "recipients": {
+    "alice": "alice.samimmi.testnet",
+    "eve": "eve.samimmi.testnet"
+  },
+  "capMicroUsdc": "10000000",
+  "tokenDecimals": 6,
+  "createdAt": "2026-10-25T13:54:55.883Z"
+}
