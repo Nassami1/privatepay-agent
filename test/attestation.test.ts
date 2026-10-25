@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   simulatedAttestation,
   verifyAttestationReport,
@@ -36,6 +37,10 @@ function syntheticReport(nonce: string): unknown {
   };
 }
 
+function reportJsonOf(report: unknown): string {
+  return `${JSON.stringify(report, null, 2)}\n`;
+}
+
 test('simulated evidence is explicitly labelled and carries the required fields', () => {
   const evidence = simulatedAttestation({
     model: 'local-deterministic-extractor',
@@ -52,10 +57,13 @@ test('simulated evidence is explicitly labelled and carries the required fields'
   assert.equal(evidence.digest.length, 64);
 });
 
-test('real report passes structural checks and binds the nonce', () => {
+test('real report passes structural checks and the digest covers the archived bytes', () => {
   const nonce = 'a'.repeat(64);
+  const report = syntheticReport(nonce);
+  const reportJson = reportJsonOf(report);
   const evidence = verifyAttestationReport({
-    report: syntheticReport(nonce),
+    report,
+    reportJson,
     nonce,
     model: 'z-ai/glm-5.3-flash',
     redaction,
@@ -66,14 +74,16 @@ test('real report passes structural checks and binds the nonce', () => {
   assert.equal(evidence.verificationUrl, 'https://cloud.near.ai/verify');
   assert.equal(evidence.environment?.gatewayAppId, 'app-1');
   assert.equal(evidence.environment?.eventLogEntries, 2);
-  assert.equal(evidence.digest.length, 64);
+  assert.equal(evidence.digest, createHash('sha256').update(reportJson).digest('hex'));
 });
 
 test('rejects a report whose nonce does not match the client nonce', () => {
+  const report = syntheticReport('b'.repeat(64));
   assert.throws(
     () =>
       verifyAttestationReport({
-        report: syntheticReport('b'.repeat(64)),
+        report,
+        reportJson: reportJsonOf(report),
         nonce: 'c'.repeat(64),
         model: 'z-ai/glm-5.3-flash',
         redaction,
@@ -84,10 +94,12 @@ test('rejects a report whose nonce does not match the client nonce', () => {
 
 test('rejects a report for a different model', () => {
   const nonce = 'd'.repeat(64);
+  const report = syntheticReport(nonce);
   assert.throws(
     () =>
       verifyAttestationReport({
-        report: syntheticReport(nonce),
+        report,
+        reportJson: reportJsonOf(report),
         nonce,
         model: 'some/other-model',
         redaction,
@@ -98,14 +110,13 @@ test('rejects a report for a different model', () => {
 
 test('rejects a report with no event log', () => {
   const nonce = 'e'.repeat(64);
-  const report = syntheticReport(nonce) as {
-    gateway_attestation: { event_log?: unknown };
-  };
+  const report = syntheticReport(nonce) as { gateway_attestation: { event_log?: unknown } };
   delete report.gateway_attestation.event_log;
   assert.throws(
     () =>
       verifyAttestationReport({
         report,
+        reportJson: reportJsonOf(report),
         nonce,
         model: 'z-ai/glm-5.3-flash',
         redaction,
@@ -122,6 +133,7 @@ test('rejects a report with no model attestation', () => {
     () =>
       verifyAttestationReport({
         report,
+        reportJson: reportJsonOf(report),
         nonce,
         model: 'z-ai/glm-5.3-flash',
         redaction,

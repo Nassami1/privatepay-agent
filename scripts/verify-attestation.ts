@@ -43,12 +43,18 @@ async function main(): Promise<void> {
   }
 
   const model = config.nearAi.model as string;
-  const { report, nonce } = await fetchAttestationReport(
+  const { report, reportJson, nonce } = await fetchAttestationReport(
     config.nearAi.baseUrl,
     config.nearAi.apiKey as string,
     model,
   );
-  const evidence = verifyAttestationReport({ report, nonce, model, redaction: EMPTY_REDACTION });
+  const evidence = verifyAttestationReport({
+    report,
+    reportJson,
+    nonce,
+    model,
+    redaction: EMPTY_REDACTION,
+  });
 
   console.log(`[attestation] mode=real model=${model} nonce=${nonce.slice(0, 12)}…`);
   for (const check of evidence.checks) {
@@ -71,7 +77,8 @@ async function main(): Promise<void> {
   await mkdir(artifactsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const reportPath = join(artifactsDir, `attestation-report-${stamp}.json`);
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  // Write the exact bytes the digest covers.
+  await writeFile(reportPath, reportJson, 'utf8');
   console.log(`[attestation] report archived at artifacts/attestation-report-${stamp}.json`);
   console.log('[attestation] result=real (structural checks passed)');
 }

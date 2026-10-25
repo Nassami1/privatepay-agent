@@ -18,7 +18,7 @@ test('defaults to testnet and the demo policy', () => {
     const config = loadConfig();
     assert.equal(config.near.network, 'testnet');
     assert.equal(config.demo.dailyCapUsdc, 10);
-    assert.equal(config.demo.whitelistRecipient, 'alice.testnet');
+    assert.equal(config.demo.whitelistRecipient, 'alice.samimmi.testnet');
   } finally {
     process.env = saved;
   }

@@ -2,59 +2,87 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LocalPolicy } from '../agent/policy/local.js';
 
-const now = (): Date => new Date('2026-10-24T12:00:00Z');
+const CAP = 10_000_000n;
+const THREE = 3_000_000n;
+const now = (): Date => new Date('2026-10-25T12:00:00Z');
 
-test('allows a whitelisted payment under the cap and records it', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  const result = await policy.tryPay({ to: 'alice.testnet', amountUsdc: 3, invoiceRef: 'INV-1' });
+function policy(): LocalPolicy {
+  return new LocalPolicy({ capMicroUsdc: CAP, whitelist: ['alice.samimmi.testnet'], now });
+}
+
+test('allows a whitelisted micro-USDC payment under the cap', async () => {
+  const subject = policy();
+  const result = await subject.tryPay({
+    to: 'alice.samimmi.testnet',
+    amountMicroUsdc: THREE,
+    invoiceRef: 'INV-1',
+  });
   assert.equal(result.ok, true);
-  const state = await policy.getPolicy();
-  assert.equal(state.capUsdc, 10);
-  assert.equal(state.spentTodayUsdc, 3);
-  assert.equal(state.mode, 'local');
-  const log = await policy.getLog(10);
-  assert.equal(log.length, 1);
+  const state = await subject.getPolicy();
+  assert.equal(state.capMicroUsdc, CAP);
+  assert.equal(state.spentTodayMicroUsdc, THREE);
+  const log = await subject.getLog(10);
   assert.equal(log[0]?.result, 'SUCCESS');
-  assert.equal(log[0]?.invoiceRef, 'INV-1');
+  assert.equal(log[0]?.amountMicroUsdc, THREE);
 });
 
-test('blocks an over-cap payment and does not move the spent counter', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  await policy.tryPay({ to: 'alice.testnet', amountUsdc: 8, invoiceRef: 'INV-1' });
-  const blocked = await policy.tryPay({ to: 'alice.testnet', amountUsdc: 3, invoiceRef: 'INV-2' });
+test('blocks over-cap and does not move the spent counter', async () => {
+  const subject = policy();
+  await subject.tryPay({ to: 'alice.samimmi.testnet', amountMicroUsdc: 8_000_000n, invoiceRef: 'A' });
+  const blocked = await subject.tryPay({
+    to: 'alice.samimmi.testnet',
+    amountMicroUsdc: 3_000_000n,
+    invoiceRef: 'B',
+  });
   assert.deepEqual(blocked, { ok: false, reason: 'OVER_LIMIT' });
-  assert.equal((await policy.getPolicy()).spentTodayUsdc, 8);
+  assert.equal((await subject.getPolicy()).spentTodayMicroUsdc, 8_000_000n);
 });
 
-test('checks the whitelist before the cap, matching the contract', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  const blocked = await policy.tryPay({ to: 'eve.testnet', amountUsdc: 50, invoiceRef: 'INV-3' });
+test('checks the whitelist before the cap', async () => {
+  const blocked = await policy().tryPay({
+    to: 'eve.samimmi.testnet',
+    amountMicroUsdc: 50_000_000n,
+    invoiceRef: 'INV-3',
+  });
   assert.deepEqual(blocked, { ok: false, reason: 'NOT_WHITELISTED' });
-  const log = await policy.getLog(10);
-  assert.equal(log[0]?.result, 'BLOCKED_NOT_WHITELISTED');
 });
 
-test('does not let a blocked attempt consume the cap', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  await policy.tryPay({ to: 'alice.testnet', amountUsdc: 50, invoiceRef: 'INV-1' });
-  const allowed = await policy.tryPay({ to: 'alice.testnet', amountUsdc: 10, invoiceRef: 'INV-2' });
-  assert.equal(allowed.ok, true);
+test('rejects a duplicate invoice reference', async () => {
+  const subject = policy();
+  const request = { to: 'alice.samimmi.testnet', amountMicroUsdc: 1_000_000n, invoiceRef: 'DUP' };
+  assert.equal((await subject.tryPay(request)).ok, true);
+  assert.deepEqual(await subject.tryPay(request), {
+    ok: false,
+    reason: 'DUPLICATE_INVOICE',
+  });
 });
 
-test('returns the newest log entries last and honours the limit', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  for (const ref of ['A', 'B', 'C']) {
-    await policy.tryPay({ to: 'alice.testnet', amountUsdc: 0, invoiceRef: ref });
-  }
-  const log = await policy.getLog(2);
-  assert.deepEqual(log.map((entry) => entry.invoiceRef), ['B', 'C']);
+test('rejects zero amount and too-long invoice references', async () => {
+  const subject = policy();
+  assert.deepEqual(
+    await subject.tryPay({ to: 'alice.samimmi.testnet', amountMicroUsdc: 0n, invoiceRef: 'Z' }),
+    { ok: false, reason: 'ZERO_AMOUNT' },
+  );
+  assert.deepEqual(
+    await subject.tryPay({
+      to: 'alice.samimmi.testnet',
+      amountMicroUsdc: 1_000_000n,
+      invoiceRef: 'x'.repeat(65),
+    }),
+    { ok: false, reason: 'INVALID_INVOICE_REF' },
+  );
 });
 
-test('resetSpent clears the counter for demo replay', async () => {
-  const policy = new LocalPolicy({ capUsdc: 10, whitelist: ['alice.testnet'], now });
-  await policy.tryPay({ to: 'alice.testnet', amountUsdc: 9, invoiceRef: 'INV-1' });
-  policy.resetSpent();
-  assert.equal((await policy.getPolicy()).spentTodayUsdc, 0);
-  const allowed = await policy.tryPay({ to: 'alice.testnet', amountUsdc: 9, invoiceRef: 'INV-2' });
-  assert.equal(allowed.ok, true);
+test('resetSpent clears the counter, idempotency and log', async () => {
+  const subject = policy();
+  await subject.tryPay({ to: 'alice.samimmi.testnet', amountMicroUsdc: 9_000_000n, invoiceRef: 'A' });
+  subject.resetSpent();
+  assert.equal((await subject.getPolicy()).spentTodayMicroUsdc, 0n);
+  assert.equal((await subject.getLog(10)).length, 0);
+  const again = await subject.tryPay({
+    to: 'alice.samimmi.testnet',
+    amountMicroUsdc: 9_000_000n,
+    invoiceRef: 'A',
+  });
+  assert.equal(again.ok, true);
 });

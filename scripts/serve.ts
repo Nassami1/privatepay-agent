@@ -39,9 +39,26 @@ if (!existsSync(join(root, 'index.html'))) {
   process.exit(1);
 }
 
+const CSP =
+  "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; " +
+  "form-action 'none'; object-src 'none'";
+
 const server = createServer((request, response) => {
+  response.setHeader('content-security-policy', CSP);
+  response.setHeader('x-content-type-options', 'nosniff');
+  response.setHeader('referrer-policy', 'no-referrer');
+
   const url = new URL(request.url ?? '/', 'http://localhost');
-  const decoded = decodeURIComponent(url.pathname);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    response.statusCode = 400;
+    response.setHeader('content-type', 'text/plain; charset=utf-8');
+    response.end('bad request');
+    return;
+  }
   const candidate = normalize(join(root, decoded === '/' ? 'index.html' : decoded));
   const insideRoot = candidate === root || candidate.startsWith(root + sep);
   const exists = insideRoot && existsSync(candidate) && statSync(candidate).isFile();

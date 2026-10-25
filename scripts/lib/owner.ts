@@ -1,78 +1,97 @@
 /**
  * Owner-side helpers for testnet maintenance scripts.
  *
- * The owner key is a full-access testnet key kept outside the repository in
- * `.keys/` (gitignored). It is never read by the agent runtime, and the agent's
- * own Function Call Key cannot call any of the methods these scripts use.
+ * The owner is the human wallet (`samimmi.testnet`), not the agent account.
+ * Its full-access key lives in `.keys/owner.json` (gitignored) and is never read
+ * by the agent runtime. The agent's Function Call Key cannot call any of the
+ * methods these scripts use.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { connect, keyStores, KeyPair, type Account } from 'near-api-js';
 import type { Config } from '../../agent/config.js';
+import { viewFunction } from '../../agent/near/rpc.js';
+import type { PolicyState } from '../../agent/types.js';
 
-export interface DeployerKeyFile {
+export interface OwnerKeyFile {
   accountId: string;
+  publicKey: string;
   secretKey: string;
-  publicKey?: string;
 }
 
 export interface OwnerContext {
   account: Account;
   accountId: string;
-  contractId: string;
+  policyId: string;
 }
 
-function arg(name: string): string | null {
-  const index = process.argv.indexOf(name);
-  if (index === -1) return null;
-  return process.argv[index + 1] ?? null;
-}
-
-export function loadDeployerKey(rootDir: string): DeployerKeyFile {
-  const explicit = arg('--key');
-  const candidates = explicit
-    ? [resolve(explicit)]
-    : ['.keys/deployer.json', '.keys/dev-account.json', '.keys/testnet.json'].map((path) =>
-        join(rootDir, path),
-      );
-  for (const path of candidates) {
-    if (!existsSync(path)) continue;
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<DeployerKeyFile>;
-    if (typeof parsed.accountId === 'string' && typeof parsed.secretKey === 'string') {
-      return { accountId: parsed.accountId, secretKey: parsed.secretKey, publicKey: parsed.publicKey };
-    }
+export function loadOwnerKey(rootDir: string): OwnerKeyFile {
+  const path = join(rootDir, '.keys', 'owner.json');
+  if (!existsSync(path)) {
+    throw new Error(
+      'Missing .keys/owner.json. Create it from the owner seed phrase; it must contain {accountId, publicKey, secretKey}.',
+    );
   }
-  throw new Error(
-    `No owner key found. Expected .keys/deployer.json with {accountId, secretKey}. Tried: ${candidates.join(', ')}`,
-  );
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<OwnerKeyFile>;
+  if (
+    typeof parsed.accountId !== 'string' ||
+    typeof parsed.publicKey !== 'string' ||
+    typeof parsed.secretKey !== 'string'
+  ) {
+    throw new Error('.keys/owner.json is missing accountId, publicKey or secretKey');
+  }
+  return { accountId: parsed.accountId, publicKey: parsed.publicKey, secretKey: parsed.secretKey };
 }
 
 export async function connectOwner(config: Config): Promise<OwnerContext> {
-  const keyFile = loadDeployerKey(config.rootDir);
-  const accountId = config.near.accountId ?? keyFile.accountId;
-  const contractId = config.near.policyContractId ?? accountId;
-  if (accountId !== keyFile.accountId) {
-    throw new Error(
-      `NEAR_ACCOUNT_ID (${accountId}) does not match the owner key account (${keyFile.accountId}).`,
-    );
-  }
-  if (contractId !== accountId) {
-    throw new Error(
-      `This prototype owns the policy on the account that holds the key. Set POLICY_CONTRACT_ID=${accountId}.`,
-    );
+  const keyFile = loadOwnerKey(config.rootDir);
+  const policyId = config.near.policyContractId;
+  if (policyId === null) {
+    throw new Error('POLICY_CONTRACT_ID is not set');
   }
 
   const keyStore = new keyStores.InMemoryKeyStore();
-  await keyStore.setKey(config.near.network, accountId, KeyPair.fromString(keyFile.secretKey));
+  await keyStore.setKey(
+    config.near.network,
+    keyFile.accountId,
+    KeyPair.fromString(keyFile.secretKey),
+  );
   const near = await connect({
     networkId: config.near.network,
     nodeUrl: config.near.rpcUrl,
     keyStore,
     logger: false,
   } as unknown as Parameters<typeof connect>[0]);
-  const account = await near.account(accountId);
-  return { account, accountId, contractId };
+  const account = await near.account(keyFile.accountId);
+  return { account, accountId: keyFile.accountId, policyId };
+}
+
+export async function readPolicy(policyId: string): Promise<PolicyState | null> {
+  try {
+    const raw = await viewFunction<{
+      owner: string;
+      agent_id: string;
+      token_id: string;
+      cap_micro_usdc: string;
+      spent_today_micro_usdc: string;
+      whitelist: string[];
+      paid_invoices: number;
+    }>(policyId, 'get_policy');
+    return {
+      ownerId: raw.owner,
+      agentId: raw.agent_id,
+      tokenId: raw.token_id,
+      capMicroUsdc: BigInt(raw.cap_micro_usdc),
+      spentTodayMicroUsdc: BigInt(raw.spent_today_micro_usdc),
+      whitelist: raw.whitelist,
+      paidInvoices: Number(raw.paid_invoices),
+      mode: 'testnet',
+      contractId: policyId,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function txHashOf(outcome: { transaction_outcome?: { id?: string } }): string {

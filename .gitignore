@@ -21,3 +21,10 @@ frontend/data/*.json
 
 # submission answers (personal data)
 submission/payload.json
+
+# cargo build output
+contracts/target/
+contracts/*/target/
+
+# compiled contract artifacts are built locally
+contracts/*/build/*.wasm

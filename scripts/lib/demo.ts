@@ -1,23 +1,27 @@
 /**
  * Shared implementation for `npm run demo:success` and `npm run demo:blocked`.
  *
- * Output contract (kept stable for judges and for the acceptance tests):
+ * Output contract (kept stable for judges and for the acceptance checks):
  *   [policy] cap=... USDC spent=... whitelist=[...]
  *   [tee]    model=... attestation=OK|SIMULATED ref=...
- *   [pay]    to=... amount=... USDC -> SUCCESS|BLOCKED_* tx=...
+ *   [pay]    to=... amount=... USDC -> SUCCESS|BLOCKED_* ...
  *   [log]    sensitive invoice text NOT printed; only invoice_ref shown
  */
 
 import { randomUUID } from 'node:crypto';
+import { formatUsdc } from '../../agent/amount.js';
 import { loadConfig, loadDotEnv, type Config } from '../../agent/config.js';
 import { createPolicy } from '../../agent/policy/index.js';
 import { attemptPayment, type AttemptResult } from '../../agent/agent.js';
 import { checkAgentKey } from '../../agent/keyGuard.js';
 import { INVOICES, type DemoInvoice } from '../../agent/fixtures.js';
 import { writeDemoArtifacts } from '../../agent/artifacts.js';
+import { getFtBalance } from '../../agent/near/ft.js';
+import { simulatedAttestation } from '../../agent/tee/attestation.js';
 import type {
   DemoRunRecord,
   KeyGuardResult,
+  PaymentAttemptRecord,
   PolicyState,
   TeeRun,
 } from '../../agent/types.js';
@@ -54,19 +58,39 @@ export async function runDemo(demo: DemoName): Promise<number> {
     const result = await attemptPayment(config, policy, invoice);
     results.push(result);
     printTee(result.tee);
-    printPay(result);
+    printPay(result.record);
   }
 
   const after = await policy.getPolicy();
-  const log = await policy.getLog(20);
+  let log = await policy.getLog(20);
+  // The read node can lag one block behind the last try_pay; wait until every
+  // invoice from this run appears in the snapshot before writing the artifact.
+  const expectedRefs = new Set(results.map((result) => result.record.invoiceRef));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if ([...expectedRefs].every((ref) => log.some((entry) => entry.invoiceRef === ref))) break;
+    await sleep(300);
+    log = await policy.getLog(20);
+  }
+  const tokenId = after.tokenId ?? before.tokenId;
+  const policyBalanceMicro =
+    tokenId !== null && policy.contractId !== null
+      ? await getFtBalance(tokenId, policy.contractId).catch(() => 0n)
+      : 0n;
+  const aliceBalanceMicro =
+    tokenId !== null
+      ? await getFtBalance(tokenId, config.demo.whitelistRecipient).catch(() => 0n)
+      : 0n;
+
+  if (tokenId !== null) {
+    console.log(
+      `[ft] token=${tokenId} policy_balance=${formatUsdc(policyBalanceMicro)} USDC ` +
+        `recipient_balance=${formatUsdc(aliceBalanceMicro)} USDC`,
+    );
+  }
 
   console.log('[log] sensitive invoice text NOT printed; only invoice_ref shown');
 
-  const firstTee = results[0]?.tee;
-  if (firstTee === undefined) {
-    throw new Error('no invoice was processed');
-  }
-
+  const firstTee = results.find((result) => result.tee !== null)?.tee ?? unavailableTee();
   const run: DemoRunRecord = {
     runId: randomUUID(),
     demo,
@@ -80,31 +104,35 @@ export async function runDemo(demo: DemoName): Promise<number> {
       after,
       log,
     },
+    ft: {
+      tokenId,
+      policyBalanceMicro,
+      aliceBalanceMicro,
+    },
     tee: {
       mode: firstTee.mode,
       model: firstTee.model,
       attestation: firstTee.attestation,
       redactedFields: firstTee.redaction.redactedFields,
       latencyMs: firstTee.latencyMs,
+      cached: firstTee.attestationCached,
+      signature: firstTee.signature,
       ...(firstTee.fallbackReason !== undefined
         ? { fallbackReason: firstTee.fallbackReason }
         : {}),
     },
     attempts: results.map((result) => result.record),
-    notes: buildNotes(config, results),
+    notes: buildNotes(policy.mode, results, tokenId !== null),
     ...(keyGuard !== undefined ? { keyGuard } : {}),
   };
 
-  // Archive the raw real report when available; when the run is simulated,
-  // archive the labelled SIMULATED_ATTESTATION object instead so the evidence
-  // can be inspected without the terminal output.
   const archivedEvidence =
-    firstTee.rawReport ??
-    (firstTee.attestation.mode === 'simulated' ? firstTee.attestation : undefined);
+    firstTee.rawReportJson ??
+    `${JSON.stringify(firstTee.attestation, null, 2)}\n`;
   const paths = await writeDemoArtifacts(config.rootDir, run, archivedEvidence);
   console.log('[dashboard] frontend/data/dashboard.json');
   if (paths.attestation !== null) {
-    console.log(`[artifact] attestation report archived at ${relativePath(paths.attestation, config)}`);
+    console.log(`[artifact] evidence archived at ${relativePath(paths.attestation, config)}`);
   }
 
   return 0;
@@ -113,8 +141,10 @@ export async function runDemo(demo: DemoName): Promise<number> {
 function printPolicy(state: PolicyState): void {
   const source = state.mode === 'testnet' ? `testnet:${state.contractId}` : 'local-simulation';
   console.log(
-    `[policy] cap=${state.capUsdc} USDC spent=${state.spentTodayUsdc} ` +
-      `whitelist=[${state.whitelist.join(', ')}] source=${source}`,
+    `[policy] cap=${formatUsdc(state.capMicroUsdc)} USDC ` +
+      `spent=${formatUsdc(state.spentTodayMicroUsdc)} ` +
+      `whitelist=[${state.whitelist.join(', ')}] source=${source}` +
+      (state.tokenId !== null ? ` token=${state.tokenId}` : ''),
   );
 }
 
@@ -123,9 +153,9 @@ function printKeyGuard(guard: KeyGuardResult): void {
     console.log(`[key] guard=SKIPPED ${guard.checks[0]?.detail ?? ''}`);
     return;
   }
-  const allowance =
-    guard.checks.find((check) => check.name === 'has_gas_allowance')?.detail ?? 'allowance=unknown';
   if (guard.ok) {
+    const allowance =
+      guard.checks.find((check) => check.name === 'has_gas_allowance')?.detail ?? '';
     console.log(
       `[key] guard=PASS account=${guard.accountId} receiver=${guard.contractId} ` +
         `methods=[try_pay] ${allowance}`,
@@ -133,17 +163,21 @@ function printKeyGuard(guard: KeyGuardResult): void {
     return;
   }
   const failures = guard.checks.filter((check) => !check.ok);
-  console.log(`[key] guard=FAIL ${failures.map((check) => `${check.name}: ${check.detail}`).join('; ')}`);
+  console.log(
+    `[key] guard=FAIL ${failures.map((check) => `${check.name}: ${check.detail}`).join('; ')}`,
+  );
 }
 
-function printTee(tee: TeeRun): void {
-  const ref =
-    tee.attestation.mode === 'real'
-      ? tee.attestation.verificationUrl
-      : tee.attestation.verificationUrl;
+function printTee(tee: TeeRun | null): void {
+  if (tee === null) {
+    console.log('[tee] mode=unavailable — payment refused (fail-closed)');
+    return;
+  }
   const status = tee.attestation.mode === 'real' ? 'OK' : 'SIMULATED';
   console.log(
-    `[tee] model=${tee.model} attestation=${status} ref=${ref} latency=${(tee.latencyMs / 1000).toFixed(1)}s`,
+    `[tee] model=${tee.model} attestation=${status} ref=${tee.attestation.verificationUrl} ` +
+      `cached=${tee.attestationCached} signature=${tee.signature?.kind ?? 'none'} ` +
+      `latency=${(tee.latencyMs / 1000).toFixed(1)}s`,
   );
   console.log(
     `[tee] privacy=redacted fields=[${tee.redaction.redactedFields.join(',')}] ` +
@@ -151,67 +185,107 @@ function printTee(tee: TeeRun): void {
   );
   if (tee.attestation.mode === 'real') {
     const passed = tee.attestation.checks.filter((check) => check.ok).length;
-    const total = tee.attestation.checks.length;
     console.log(
-      `[attestation] mode=real checks=${passed}/${total} verification=structural ` +
-        `digest=sha256:${tee.attestation.digest.slice(0, 16)}`,
+      `[attestation] mode=real checks=${passed}/${tee.attestation.checks.length} ` +
+        `verification=structural digest=sha256:${tee.attestation.digest.slice(0, 16)}`,
     );
-    console.log(
-      '[attestation] note=full Intel TDX/NVIDIA quote verification is delegated to the official verifier (see README)',
-    );
+    if (tee.signature !== null) {
+      console.log(
+        `[sig] ${tee.signature.kind} verified signer=${tee.signature.signer} ` +
+          `algorithm=${tee.signature.algorithm}`,
+      );
+    }
   } else {
     console.log('[attestation] mode=simulated — NOT a real TEE attestation');
     console.log(`[attestation] reason=${JSON.stringify(tee.attestation.reason ?? 'unknown')}`);
   }
 }
 
-function printPay(result: AttemptResult): void {
-  const { record } = result;
+function printPay(record: PaymentAttemptRecord): void {
   if (record.result === 'SUCCESS') {
+    const tx = record.onChainTx ?? record.policyTx ?? 'unknown';
     const parts = [
-      `[pay] to=${record.to} amount=${record.amountUsdc} USDC -> SUCCESS tx=${record.settlement?.txId ?? 'unknown'}`,
+      `[pay] to=${record.to} amount=${formatUsdc(record.amountMicroUsdc)} USDC -> SUCCESS tx=${tx}`,
     ];
     if (record.policyTx !== null) parts.push(`policy_ref=${record.policyTx}`);
-    if (record.onChainTx !== null) parts.push(`chain_tx=${record.onChainTx}`);
-    console.log(parts.join(' '));
-    if (record.settlement !== null) {
-      const quote = record.settlement.quoted === true ? ' quote=live' : '';
-      const amountOut =
-        record.settlement.amountOut !== undefined ? ` amount_out=${record.settlement.amountOut}` : '';
-      console.log(
-        `[settle] mode=${record.settlement.mode.toUpperCase()}${quote}${amountOut} ` +
-          `tx=${record.settlement.txId} reason=${JSON.stringify(record.settlement.reason ?? '')}`,
-      );
+    if (record.ftBalanceAfterMicro !== undefined) {
+      parts.push(`ft_balance=${formatUsdc(record.ftBalanceAfterMicro)}`);
     }
+    console.log(parts.join(' '));
     return;
   }
-  console.log(`[pay] to=${record.to} amount=${record.amountUsdc} USDC -> ${record.result}`);
+
+  if (record.to === '') {
+    console.log(
+      `[pay] invoice=${record.invoiceRef} -> ${record.result}` +
+        (record.detail !== undefined ? ` detail=${JSON.stringify(record.detail)}` : ''),
+    );
+    return;
+  }
+
+  console.log(
+    `[pay] to=${record.to} amount=${formatUsdc(record.amountMicroUsdc)} USDC -> ${record.result}` +
+      (record.detail !== undefined ? ` detail=${JSON.stringify(record.detail)}` : ''),
+  );
 }
 
-function buildNotes(config: Config, results: AttemptResult[]): string[] {
+function buildNotes(
+  mode: PolicyState['mode'],
+  results: AttemptResult[],
+  hasToken: boolean,
+): string[] {
   const notes: string[] = [];
-  const simulatedSettlements = results.filter(
-    (result) => result.record.settlement?.mode === 'simulated',
-  );
-  if (simulatedSettlements.length > 0) {
+  if (mode === 'testnet') {
     notes.push(
-      'Settlement is simulated (no testnet NEAR Intents settlement service); policy enforcement is real.',
+      'Settlement is the policy contract\'s ft_transfer; the recipient balance is read after the transaction.',
     );
+  } else {
+    notes.push('Local policy mirror; no chain state and no FT transfer.');
   }
-  const simulatedTee = results.filter((result) => result.tee.mode === 'simulated');
-  if (simulatedTee.length > 0) {
-    notes.push('Confidential inference is SIMULATED for at least one attempt; see attestation evidence.');
+  if (results.some((result) => result.tee?.mode === 'simulated')) {
+    notes.push('Confidential inference is SIMULATED; see the attestation evidence.');
   }
   if (results.some((result) => result.record.result.startsWith('BLOCKED'))) {
-    notes.push('Blocked attempts were refused by the policy layer before settlement.');
+    notes.push('Blocked attempts never reached the FT transfer.');
   }
-  if (config.intents.apiUrl === null) {
-    notes.push('INTENTS_API_URL is empty: no external Intents quote was requested.');
+  if (results.some((result) => result.record.result === 'HELD_FOR_REVIEW')) {
+    notes.push('A risk flag held an invoice before the contract call.');
+  }
+  if (mode === 'testnet' && hasToken) {
+    notes.push('Policy enforcement happens in the money path: the contract holds the tokens.');
   }
   return notes;
+}
+
+function unavailableTee(): TeeRun {
+  const redaction = { redactedText: '', redactedFields: [], replacements: 0 };
+  return {
+    mode: 'simulated',
+    model: 'unavailable',
+    latencyMs: 0,
+    decision: {
+      amountMicroUsdc: 0n,
+      recipient: '',
+      invoiceRef: 'UNKNOWN',
+      purpose: '',
+      riskFlags: [],
+    },
+    attestation: simulatedAttestation({
+      model: 'unavailable',
+      redaction,
+      reason: 'TEE unavailable; payment refused',
+    }),
+    redaction,
+    attestationCached: false,
+    signature: null,
+  };
 }
 
 function relativePath(absolute: string, config: Config): string {
   const prefix = `${config.rootDir}/`;
   return absolute.startsWith(prefix) ? absolute.slice(prefix.length) : absolute;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

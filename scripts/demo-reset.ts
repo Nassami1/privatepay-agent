@@ -1,58 +1,70 @@
 #!/usr/bin/env tsx
 /**
  * Owner-only reset so the two-minute demo can be replayed without waiting for
- * UTC midnight. Uses the full-access owner key from `.keys/`, never the agent's
- * Function Call Key (which cannot call these methods at all).
+ * UTC midnight. Uses the owner key from `.keys/owner.json`; the agent's Function
+ * Call Key cannot call any of these methods.
  */
 
+import { MICRO_PER_USDC, formatUsdc } from '../agent/amount.js';
 import { loadConfig, loadDotEnv } from '../agent/config.js';
-import { viewFunction } from '../agent/near/rpc.js';
-import { connectOwner, txHashOf } from './lib/owner.js';
+import { connectOwner, readPolicy, txHashOf } from './lib/owner.js';
 
 const GAS = 100_000_000_000_000n;
 
 try {
   loadDotEnv();
   const config = loadConfig();
-  const { account, contractId } = await connectOwner(config);
+  const { account, policyId } = await connectOwner(config);
+  const cap = BigInt(config.demo.dailyCapUsdc) * MICRO_PER_USDC;
 
-  const cap = await account.functionCall({
-    contractId,
+  const capTx = await account.functionCall({
+    contractId: policyId,
     methodName: 'set_daily_cap',
-    args: { cap_usdc: config.demo.dailyCapUsdc },
+    args: { cap_micro_usdc: cap.toString() },
     gas: GAS,
     attachedDeposit: 0n,
   });
-  console.log(`[reset] cap=${config.demo.dailyCapUsdc} tx=${txHashOf(cap)}`);
+  console.log(`[reset] cap=${formatUsdc(cap)} USDC tx=${txHashOf(capTx)}`);
 
-  const whitelist = await account.functionCall({
-    contractId,
+  const whitelistTx = await account.functionCall({
+    contractId: policyId,
     methodName: 'add_to_whitelist',
     args: { account_id: config.demo.whitelistRecipient },
     gas: GAS,
     attachedDeposit: 0n,
   });
-  console.log(`[reset] whitelist += ${config.demo.whitelistRecipient} tx=${txHashOf(whitelist)}`);
+  console.log(
+    `[reset] whitelist += ${config.demo.whitelistRecipient} tx=${txHashOf(whitelistTx)}`,
+  );
 
-  const spent = await account.functionCall({
-    contractId,
+  const resetTx = await account.functionCall({
+    contractId: policyId,
     methodName: 'reset_spent',
     args: {},
     gas: GAS,
     attachedDeposit: 0n,
   });
-  console.log(`[reset] spent_today_usdc=0 tx=${txHashOf(spent)}`);
+  console.log(`[reset] spent_today=0, invoice idempotency cleared tx=${txHashOf(resetTx)}`);
 
-  const policy = await viewFunction<{
-    cap_usdc: number;
-    spent_today_usdc: number;
-    whitelist: string[];
-  }>(contractId, 'get_policy');
-  console.log(
-    `[reset] policy cap=${policy.cap_usdc} spent=${policy.spent_today_usdc} ` +
-      `whitelist=[${policy.whitelist.join(', ')}]`,
-  );
+  // The read node can lag one block behind the reset; wait for the counter.
+  let policy = await readPolicy(policyId);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (policy !== null && policy.spentTodayMicroUsdc === 0n) break;
+    await sleep(400);
+    policy = await readPolicy(policyId);
+  }
+  if (policy !== null) {
+    console.log(
+      `[reset] policy cap=${formatUsdc(policy.capMicroUsdc)} ` +
+        `spent=${formatUsdc(policy.spentTodayMicroUsdc)} ` +
+        `whitelist=[${policy.whitelist.join(', ')}]`,
+    );
+  }
 } catch (error) {
   console.error(`[error] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
