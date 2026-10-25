@@ -258,8 +258,8 @@ Keys, on-chain policy, denial proof), `agents` (spending within constraints),
 
 ```text
 agent/                  TypeScript runtime: policy client, TEE, redaction, validation
-contracts/policy/       Rust near-sdk policy contract, wasm and tests
-contracts/test-ft/      Minimal NEP-141 tUSDC token, wasm and tests
+contracts/policy/       Rust near-sdk policy contract and tests (wasm built locally)
+contracts/test-ft/      Minimal NEP-141 tUSDC token and tests (wasm built locally)
 frontend/               Static dashboard (HTML, CSS, vanilla JS, self-hosted fonts)
 scripts/                Demos, verification, bootstrap, static server, submission check
 test/                   node:test unit tests
