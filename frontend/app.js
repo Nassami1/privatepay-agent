@@ -12,6 +12,8 @@ const state = {
   filter: 'all',
 };
 
+const MICRO = 1_000_000n;
+
 const $ = (selector) => document.querySelector(selector);
 
 const ESCAPES = {
@@ -30,6 +32,36 @@ function pretty(value) {
   return String(value)
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function toMicro(value) {
+  try {
+    return typeof value === 'bigint' ? value : BigInt(String(value ?? '0'));
+  } catch {
+    return 0n;
+  }
+}
+
+function formatUsdc(value) {
+  const micro = toMicro(value);
+  const negative = micro < 0n;
+  const absolute = negative ? -micro : micro;
+  const whole = absolute / MICRO;
+  const fraction = absolute % MICRO;
+  let output;
+  if (fraction === 0n) {
+    output = `${whole}.00`;
+  } else if (fraction % 10_000n === 0n) {
+    output = `${whole}.${(fraction / 10_000n).toString().padStart(2, '0')}`;
+  } else {
+    const digits = fraction.toString().padStart(6, '0').replace(/0+$/, '');
+    output = `${whole}.${digits}`;
+  }
+  return negative ? `-${output}` : output;
+}
+
+function capDisplay(value) {
+  return formatUsdc(value).replace(/\.00$/, '');
 }
 
 function shortHash(value, head = 8, tail = 6) {
@@ -121,9 +153,9 @@ function renderEmpty() {
   $('#chain').innerHTML = [
     ['Ingest', 'raw invoice stays in-process'],
     ['Redact', 'identifiers removed before inference'],
-    ['Confidential TEE', 'attestation evidence'],
-    ['Policy', 'cap + whitelist enforced on testnet'],
-    ['Settle', 'constrained settlement'],
+    ['Confidential TEE', 'attestation + response signature'],
+    ['Policy', 'cap, whitelist, idempotency on testnet'],
+    ['FT transfer', 'the contract pays the recipient'],
   ]
     .map(
       ([title, detail], index) => `
@@ -141,7 +173,7 @@ function renderEmpty() {
     '<p class="fine">Run <code>npm run demo:success</code> to write the first evidence file.</p>';
   $('#tee-card').innerHTML =
     '<div class="card__head"><h3>TEE evidence</h3><span class="stamp stamp--guard stamp--dark">No runs</span></div>' +
-    '<p class="fine">Attestation evidence appears after a demo run.</p>';
+    '<p class="fine">Attestation and signature evidence appears after a demo run.</p>';
   $('#chain-card').innerHTML =
     '<div class="card__head"><h3>Chain record</h3></div>' +
     '<p class="log-empty">No policy log yet.</p>';
@@ -164,38 +196,71 @@ function renderMasthead() {
   time.textContent = relative(state.data.generatedAt);
   time.title = formatUtc(state.data.generatedAt);
 
-  const stamp = $('#status-stamp');
-  const attempts = (state.data.runs ?? []).flatMap((entry) => entry.attempts ?? []);
-  const settlement = latestSettlement();
-
+  const token = run?.ft?.tokenId ?? state.data.latestPolicy?.tokenId ?? null;
   const settlementEl = $('#meta-settlement');
   if (settlementEl) {
-    settlementEl.textContent = settlement
-      ? settlement.mode === 'live'
-        ? 'live quote'
-        : 'simulated'
-      : 'not attempted';
+    settlementEl.textContent = token ?? 'local';
+    if (token !== null) settlementEl.title = token;
   }
 
-  if (attempts.length === 0 || run === null) {
+  const stamp = $('#status-stamp');
+  if (run === null) {
     stamp.className = 'stamp stamp--guard';
     stamp.textContent = 'Awaiting run';
+  } else if (run.attempts?.some((attempt) => attempt.result === 'BLOCKED_TEE_UNAVAILABLE')) {
+    stamp.className = 'stamp stamp--no';
+    stamp.textContent = 'TEE unavailable';
   } else if (run.tee?.mode === 'simulated') {
     stamp.className = 'stamp stamp--warn';
     stamp.textContent = 'Simulated TEE';
-  } else {
+  } else if (run.policy?.mode === 'testnet') {
     stamp.className = 'stamp stamp--ok';
-    stamp.textContent = 'TEE attested';
+    stamp.textContent = 'Attested · testnet';
+  } else {
+    stamp.className = 'stamp stamp--guard';
+    stamp.textContent = 'Local mode';
   }
 }
 
-function latestSettlement() {
-  for (const run of state.data?.runs ?? []) {
-    for (const attempt of run.attempts ?? []) {
-      if (attempt.settlement) return attempt.settlement;
-    }
-  }
-  return null;
+const RESULT_INFO = {
+  SUCCESS: { label: 'Authorised', kind: 'ok', stamp: 'Authorised' },
+  BLOCKED_OVER_LIMIT: { label: 'Refused — over limit', kind: 'no', stamp: 'Refused' },
+  BLOCKED_NOT_WHITELISTED: {
+    label: 'Refused — not whitelisted',
+    kind: 'no',
+    stamp: 'Refused',
+  },
+  BLOCKED_DUPLICATE_INVOICE: {
+    label: 'Refused — duplicate reference',
+    kind: 'no',
+    stamp: 'Refused',
+  },
+  BLOCKED_ZERO_AMOUNT: { label: 'Refused — zero amount', kind: 'no', stamp: 'Refused' },
+  BLOCKED_INVALID_INVOICE_REF: {
+    label: 'Refused — invalid reference',
+    kind: 'no',
+    stamp: 'Refused',
+  },
+  HELD_FOR_REVIEW: { label: 'Held for review', kind: 'warn', stamp: 'Held' },
+  BLOCKED_TEE_UNAVAILABLE: {
+    label: 'Refused — TEE unavailable',
+    kind: 'no',
+    stamp: 'Refused',
+  },
+  BLOCKED_UNVERIFIED_OUTPUT: {
+    label: 'Refused — model mismatch',
+    kind: 'no',
+    stamp: 'Refused',
+  },
+  BLOCKED_HUMAN_APPROVAL_REQUIRED: {
+    label: 'Held — human approval',
+    kind: 'warn',
+    stamp: 'Held',
+  },
+};
+
+function resultInfo(result) {
+  return RESULT_INFO[result] ?? { label: result, kind: 'no', stamp: 'Unknown' };
 }
 
 function renderChain() {
@@ -204,8 +269,10 @@ function renderChain() {
   const fields = run.tee?.redactedFields ?? [];
   const teeReal = run.tee?.mode === 'real';
   const policyLive = run.policy?.mode === 'testnet';
-  const settlement = latestSettlement();
-  const settlementLive = settlement?.mode === 'live';
+  const successAttempt = (state.data.runs ?? [])
+    .flatMap((entry) => entry.attempts ?? [])
+    .find((attempt) => attempt.result === 'SUCCESS');
+  const token = run.ft?.tokenId ?? null;
 
   const steps = [
     {
@@ -220,20 +287,26 @@ function renderChain() {
     },
     {
       title: 'Confidential TEE',
-      detail: teeReal ? `real · ${run.tee.model}` : 'simulated — no TEE call',
+      detail: teeReal
+        ? `real · signed by ${run.tee.signature?.kind ?? 'no signature'}`
+        : 'simulated — no TEE call',
       state: teeReal ? 'ok' : 'warn',
     },
     {
       title: 'Policy',
-      detail: policyLive ? `on-chain cap ${run.policy.after?.capUsdc ?? '—'} USDC` : 'local simulation',
+      detail: policyLive
+        ? `on-chain cap ${formatUsdc(run.policy.after?.capMicroUsdc ?? 0n)} USDC`
+        : 'local simulation',
       state: policyLive ? 'ok' : 'warn',
     },
     {
-      title: 'Settle',
-      detail: settlement
-        ? `${settlementLive ? 'live quote' : 'simulated'} · ${settlement.quoted ? '1-Click' : 'no Intents call'}`
-        : 'nothing settled',
-      state: settlement ? (settlementLive ? 'ok' : 'warn') : 'idle',
+      title: 'FT transfer',
+      detail: successAttempt && token
+        ? `contract ft_transfer · ${formatUsdc(successAttempt.amountMicroUsdc)} USDC`
+        : policyLive
+          ? 'no transfer recorded'
+          : 'local simulation',
+      state: successAttempt && token ? 'ok' : policyLive ? 'warn' : 'idle',
     },
   ];
 
@@ -254,21 +327,13 @@ function flattenAttempts() {
   const rows = [];
   for (const run of state.data.runs ?? []) {
     for (const attempt of run.attempts ?? []) {
-      rows.push({ run, attempt, kind: attempt.result === 'SUCCESS' ? 'ok' : 'no' });
+      rows.push({ run, attempt, info: resultInfo(attempt.result) });
     }
   }
   return rows;
 }
 
-function statusText(attempt) {
-  if (attempt.result === 'SUCCESS') return 'Authorised';
-  if (attempt.result === 'BLOCKED_OVER_LIMIT') return 'Refused · over limit';
-  return 'Refused · not whitelisted';
-}
-
-function renderEntry({ run, attempt, kind }, index) {
-  const ok = kind === 'ok';
-  const settlement = attempt.settlement;
+function renderEntry({ run, attempt, info }, index) {
   const chain = attempt.onChainTx
     ? `<a href="${txLink(attempt.onChainTx)}" target="_blank" rel="noreferrer">${esc(shortHash(attempt.onChainTx))}</a>`
     : '—';
@@ -276,19 +341,16 @@ function renderEntry({ run, attempt, kind }, index) {
     ? `<span class="mono">sha256:${esc(shortHash(attempt.attestationDigest, 10, 8))}</span>
        <button class="btn btn--dark" data-copy="sha256:${esc(attempt.attestationDigest)}">copy</button>`
     : 'no digest (simulated)';
+  const signature = attempt.signatureKind
+    ? `<span class="${attempt.signatureVerified ? 'ok' : 'no'}">${esc(attempt.signatureKind)} · ${attempt.signatureVerified ? 'verified' : 'not verified'}</span>`
+    : 'none';
 
-  const settlementCell = settlement
-    ? `<span class="result-line ${settlement.mode === 'live' ? 'ok' : 'warn'}"><span class="dot"></span>
-         ${settlement.mode.toUpperCase()}${settlement.quoted ? ' · 1-Click quote' : ''}</span>
-       <div class="fine">${esc(settlement.txId)}${settlement.amountOut ? ` · out ${esc(settlement.amountOut)}` : ''}</div>
-       <div class="fine">${esc(settlement.reason ?? '')}</div>`
-    : '<span class="no">not attempted — refused before settlement</span>';
-
-  const tags = (attempt.riskFlags ?? []).length
-    ? `<div class="tags">${attempt.riskFlags
-        .map((flag) => `<span class="tag tag--risk">${esc(flag.replace(/_/g, ' '))}</span>`)
-        .join('')}</div>`
-    : '';
+  const ftBalance =
+    attempt.ftBalanceAfterMicro !== undefined
+      ? `${formatUsdc(attempt.ftBalanceAfterMicro)} USDC`
+      : attempt.result === 'SUCCESS'
+        ? 'pending'
+        : 'no transfer';
 
   const redacted = (attempt.redactedFields ?? []).length
     ? `<div class="chips">${attempt.redactedFields
@@ -296,26 +358,32 @@ function renderEntry({ run, attempt, kind }, index) {
         .join('')}</div>`
     : '<span class="fine">none</span>';
 
+  const tags = (attempt.riskFlags ?? []).length
+    ? `<div class="tags">${attempt.riskFlags
+        .map((flag) => `<span class="tag tag--risk">${esc(flag.replace(/_/g, ' '))}</span>`)
+        .join('')}</div>`
+    : '';
+
   const model = attempt.teeModel ?? run.tee?.model ?? '—';
   const mode = attempt.attestationMode === 'real' ? 'REAL TEE' : 'SIMULATED';
   const runNote = `${run.demo} run · ${formatUtc(run.startedAt)}`;
 
   return `
-    <article class="entry" data-kind="${kind}" data-result="${esc(attempt.result)}" style="--i:${index}">
+    <article class="entry" data-kind="${info.kind}" data-result="${esc(attempt.result)}" style="--i:${index}">
       <div class="entry__index">${String(index + 1).padStart(2, '0')}</div>
       <div class="entry__main">
         <div class="entry__top">
           <span class="entry__ref">${esc(attempt.invoiceRef)}</span>
-          <span class="stamp ${ok ? 'stamp--ok' : 'stamp--no'}">${esc(ok ? 'Authorised' : 'Refused')}</span>
+          <span class="stamp stamp--${info.kind === 'ok' ? 'ok' : info.kind === 'warn' ? 'warn' : 'no'}">${esc(info.stamp)}</span>
         </div>
-        <p class="entry__amount ${ok ? '' : 'is-refused'}">
-          <span>${esc(attempt.amountUsdc)}</span>
+        <p class="entry__amount ${info.kind === 'ok' ? '' : info.kind === 'warn' ? 'is-held' : 'is-refused'}">
+          <span>${formatUsdc(attempt.amountMicroUsdc)}</span>
           <span class="unit">USDC</span>
           <span class="arrow" aria-hidden="true">→</span>
-          <span class="to">${esc(attempt.to)}</span>
+          <span class="to">${esc(attempt.to || 'unknown')}</span>
         </p>
         <p class="entry__facts">
-          <span>${esc(statusText(attempt))}</span>
+          <span>${esc(info.label)}</span>
           <span>${esc(runNote)}</span>
           <span>policy <b>${esc(run.policy?.mode ?? '—')}</b></span>
           <span>model <b>${esc(model)}</b></span>
@@ -327,10 +395,12 @@ function renderEntry({ run, attempt, kind }, index) {
             <div><dt>Invoice reference</dt><dd>${esc(attempt.invoiceRef)}</dd></div>
             <div><dt>Decision provenance</dt><dd>${mode} · ${esc(model)}</dd></div>
             <div><dt>Attestation digest</dt><dd>${digest}</dd></div>
+            <div><dt>Response signature</dt><dd>${signature}</dd></div>
             <div><dt>Policy receipt</dt><dd>${attempt.policyTx ? esc(attempt.policyTx) : '—'}</dd></div>
             <div><dt>Chain transaction</dt><dd>${chain}</dd></div>
-            <div><dt>Settlement</dt><dd>${settlementCell}</dd></div>
-            <div class="wide"><dt>Removed before inference</dt><dd>${redacted}</dd></div>
+            <div><dt>Recipient FT balance</dt><dd>${esc(ftBalance)}</dd></div>
+            <div><dt>Removed before inference</dt><dd>${redacted}</dd></div>
+            ${attempt.detail ? `<div class="wide"><dt>Detail</dt><dd>${esc(attempt.detail)}</dd></div>` : ''}
           </dl>
         </details>
       </div>
@@ -341,8 +411,9 @@ function renderLedger() {
   const rows = flattenAttempts();
   const counts = {
     all: rows.length,
-    ok: rows.filter((row) => row.kind === 'ok').length,
-    no: rows.filter((row) => row.kind === 'no').length,
+    ok: rows.filter((row) => row.info.kind === 'ok').length,
+    no: rows.filter((row) => row.info.kind === 'no').length,
+    warn: rows.filter((row) => row.info.kind === 'warn').length,
   };
 
   for (const [key, value] of Object.entries(counts)) {
@@ -350,7 +421,7 @@ function renderLedger() {
     if (node) node.textContent = String(value);
   }
 
-  const visible = rows.filter((row) => state.filter === 'all' || row.kind === state.filter);
+  const visible = rows.filter((row) => state.filter === 'all' || row.info.kind === state.filter);
   const list = $('#ledger-list');
   list.innerHTML = visible.map((row, index) => renderEntry(row, index)).join('');
 
@@ -361,7 +432,9 @@ function renderLedger() {
   } else {
     empty.hidden = true;
     if (visible.length === 0) {
-      list.innerHTML = `<p class="empty-note">No ${state.filter === 'ok' ? 'authorised' : 'refused'} entries in this dossier.</p>`;
+      const label =
+        state.filter === 'ok' ? 'authorised' : state.filter === 'no' ? 'refused' : 'held';
+      list.innerHTML = `<p class="empty-note">No ${label} entries in this dossier.</p>`;
     }
   }
 }
@@ -371,10 +444,12 @@ function renderPolicy() {
   const run = latestRun();
   const contract = state.data.contractId;
   const live = policy?.mode === 'testnet';
-  const cap = policy?.capUsdc ?? 0;
-  const spent = policy?.spentTodayUsdc ?? 0;
-  const ratio = cap > 0 ? Math.min(100, Math.round((spent / cap) * 100)) : 0;
+  const cap = toMicro(policy?.capMicroUsdc ?? 0n);
+  const spent = toMicro(policy?.spentTodayMicroUsdc ?? 0n);
+  const ratio = cap > 0n ? Number((spent * 100n) / cap) : 0;
   const guard = run?.keyGuard;
+  const token = run?.ft?.tokenId ?? policy?.tokenId ?? null;
+  const policyBalance = run?.ft?.policyBalanceMicro ?? 0n;
 
   const whitelist = (policy?.whitelist ?? []).length
     ? policy.whitelist.map((account) => `<li>${esc(account)}</li>`).join('')
@@ -393,19 +468,20 @@ function renderPolicy() {
   $('#policy-card').innerHTML = `
     <div class="card__head">
       <h3>Policy instrument</h3>
-      <span class="card__src">${live ? 'on-chain' : 'local simulation'}<br />${contract ? esc(shortHash(contract, 12, 8)) : 'no contract'}</span>
+      <span class="card__src">${live ? 'on-chain' : 'local simulation'}<br />${token ? esc(shortHash(token, 14, 8)) : 'no token'}</span>
     </div>
-    <p class="cap"><span class="cap__num">${cap || '—'}</span><span class="cap__unit">USDC / day<br />hard cap</span></p>
-    <div class="meter" role="img" aria-label="${spent} of ${cap} USDC spent today">
-      <div class="meter__fill" style="width:${ratio}%"></div>
+    <p class="cap"><span class="cap__num">${cap > 0n ? capDisplay(cap) : '—'}</span><span class="cap__unit">USDC / day<br />hard cap</span></p>
+    <div class="meter" role="img" aria-label="${formatUsdc(spent)} of ${formatUsdc(cap)} USDC spent today">
+      <div class="meter__fill" style="width:${Math.min(100, ratio)}%"></div>
       <div class="meter__ticks"></div>
     </div>
-    <p class="meter-caption"><span><b>${spent}</b> spent today</span><span><b>${Math.max(0, cap - spent)}</b> remaining</span></p>
+    <p class="meter-caption"><span><b>${formatUsdc(spent)}</b> spent today</span><span><b>${formatUsdc(cap > spent ? cap - spent : 0n)}</b> remaining</span></p>
     <p class="subhead">Whitelist</p>
     <ul class="whitelist">${whitelist}</ul>
+    ${token ? `<p class="subhead">Token held by the contract</p><p class="fine">${esc(token)} · ${formatUsdc(policyBalance)} USDC</p>` : ''}
     ${guardHtml}
     <p class="fine">${live
-      ? 'Cap and whitelist live in the contract. The agent can call <code>try_pay</code> and nothing else.'
+      ? `Owner ${esc(policy?.ownerId ?? '—')} · agent ${esc(policy?.agentId ?? '—')}. The agent can call try_pay and nothing else; the contract performs the transfer.`
       : 'Local mirror of the contract rules. No funds and no chain state are touched.'}</p>`;
 }
 
@@ -415,7 +491,7 @@ function renderEvidence() {
   if (!evidence) {
     $('#tee-card').innerHTML =
       '<div class="card__head"><h3>TEE evidence</h3><span class="stamp stamp--guard stamp--dark">No runs</span></div>' +
-      '<p class="fine">Attestation evidence appears after a demo run.</p>';
+      '<p class="fine">Attestation and signature evidence appears after a demo run.</p>';
     return;
   }
 
@@ -445,6 +521,10 @@ function renderEvidence() {
     : '';
 
   const digest = `sha256:${evidence.digest}`;
+  const signature = run.tee.signature;
+  const signatureLine = signature
+    ? `<span class="ok">${esc(signature.kind)} · verified</span> · ${esc(shortHash(signature.signer, 10, 8))}`
+    : '<span class="warn">no response signature</span>';
 
   $('#tee-card').innerHTML = `
     <div class="card__head">
@@ -453,6 +533,7 @@ function renderEvidence() {
     </div>
     <p class="evidence-model">${esc(evidence.model)}</p>
     <p class="evidence-score">${real ? `${passed}/${evidence.checks.length}` : 'SIMULATED'} <span>${real ? 'structural checks' : 'attestation'}</span></p>
+    <p class="fine">Response signature: ${signatureLine}${run.tee.cached ? ' · attestation cached' : ''}</p>
     <ul class="checks">${checks}</ul>
     ${environment}
     <div class="digest"><b>Report digest</b>${esc(digest)}</div>
@@ -467,6 +548,7 @@ function renderEvidence() {
 function renderChainCard() {
   const run = latestRun();
   const contract = state.data.contractId;
+  const token = run?.ft?.tokenId ?? state.data.latestPolicy?.tokenId ?? null;
   const fullLog = run?.policy?.log ?? [];
   const entries = fullLog.slice(-8).reverse();
 
@@ -476,7 +558,7 @@ function renderChainCard() {
       <tr>
         <td class="ref">${esc(entry.invoiceRef)}</td>
         <td>${esc(entry.to)}</td>
-        <td class="amt">${esc(entry.amountUsdc)} USDC</td>
+        <td class="amt">${formatUsdc(entry.amountMicroUsdc)} USDC</td>
         <td class="${entry.result === 'SUCCESS' ? 'ok' : 'no'}">${esc(entry.result.replace(/^BLOCKED_/, '').replace(/_/g, ' '))}</td>
         <td class="ts">${esc(formatUtc(entry.ts).replace(' UTC', ''))}</td>
       </tr>`,
@@ -497,6 +579,7 @@ function renderChainCard() {
       <span class="card__src">${contract ? 'testnet' : 'no contract'}</span>
     </div>
     ${table}
+    <p class="fine">Token ${token ? `<a href="${accountLink(token)}" target="_blank" rel="noreferrer">${esc(shortHash(token, 14, 8))}</a>` : '—'} · policy balance ${formatUsdc(run?.ft?.policyBalanceMicro ?? 0n)} USDC</p>
     <div class="btn-row">
       ${contract ? `<a class="btn btn--dark" href="${accountLink(contract)}" target="_blank" rel="noreferrer">Contract ↗</a>` : ''}
       <a class="btn btn--dark" href="data/dashboard.json" download>Download JSON</a>

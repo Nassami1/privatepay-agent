@@ -8,7 +8,13 @@
       name="description"
       content="A confidential payment agent: TEE-attested invoice extraction, an on-chain spending cap and whitelist, and constrained settlement."
     />
-    <meta name="theme-color" content="#efe8da" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b1210" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+    <link rel="icon" href="PrivatePayAgent-logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -30,17 +36,30 @@
         />
         <text x="50" y="58" text-anchor="middle" font-size="21" font-style="italic">PPA</text>
       </svg>
-      <span class="spine__tail">TEE · POLICY · INTENTS</span>
+      <span class="spine__tail">TEE · POLICY · FT</span>
     </aside>
 
     <div class="page">
       <header class="masthead reveal" style="--i: 0">
         <div class="masthead__left">
-          <p class="eyebrow">NEAR Hackathon 2026 · Privacy / Security / Agents</p>
-          <h1>PrivatePay <em>Agent</em></h1>
+          <div class="brand">
+            <span class="brand__plate">
+              <img
+                src="PrivatePayAgent-logo.svg"
+                alt="PrivatePay Agent logo"
+                width="54"
+                height="52"
+              />
+            </span>
+            <div class="brand__text">
+              <p class="eyebrow">NEAR Hackathon 2026 · Privacy / Security / Agents</p>
+              <h1>PrivatePay <em>Agent</em></h1>
+            </div>
+          </div>
           <p class="thesis">
-            Sensitive invoices go in. A capped, whitelisted payment comes out. The attestation
-            shows where the thinking happened — the chain shows what the agent was allowed to do.
+            The invoice is redacted locally before inference. A Confidential TEE decides what to
+            pay and signs the response. The contract holds the tokens, enforces the cap and the
+            whitelist, and pays the recipient itself.
           </p>
         </div>
         <div class="masthead__file">
@@ -50,7 +69,7 @@
             <div><dt>Network</dt><dd id="meta-network">testnet</dd></div>
             <div><dt>Contract</dt><dd id="meta-contract">not configured</dd></div>
             <div><dt>Updated</dt><dd id="meta-time">—</dd></div>
-            <div><dt>Settlement</dt><dd id="meta-settlement">—</dd></div>
+            <div><dt>FT token</dt><dd id="meta-settlement">—</dd></div>
           </dl>
           <div id="status-stamp" class="stamp stamp--guard">Awaiting run</div>
         </div>
@@ -81,6 +100,9 @@
               </button>
               <button class="filter" data-filter="no" aria-pressed="false">
                 Refused <span class="filter__count" data-count="no">0</span>
+              </button>
+              <button class="filter" data-filter="warn" aria-pressed="false">
+                Held <span class="filter__count" data-count="warn">0</span>
               </button>
               </div>
             </div>
@@ -124,11 +146,14 @@ npm run demo:blocked</code></pre>
           <a href="https://docs.near.ai/cloud/verification/" target="_blank" rel="noreferrer"
             >attestation docs</a
           >
+          <span aria-hidden="true">·</span>
+          <a href="https://x.com/hassan_samimi" target="_blank" rel="noreferrer">@hassan_samimi</a>
         </p>
         <p class="colophon__fine">
-          Policy enforcement and TEE attestation are real on this build. Settlement is simulated
-          unless a live 1-Click quote is configured; simulated values are prefixed
-          <code>SIMULATED_</code>.
+          The policy contract holds tUSDC and performs the transfer. The TEE attestation and the
+          per-response signature are real; the spending cap is enforced in the money path. The
+          owner and the agent are different accounts, and the agent key can only call
+          <code>try_pay</code>.
         </p>
       </footer>
     </div>
