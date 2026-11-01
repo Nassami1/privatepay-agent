@@ -51,10 +51,13 @@ Node.js 20.11 or newer. No credentials are needed for this path; every simulated
 is labelled.
 
 ```sh
+git clone https://github.com/Nassami1/privatepay-agent.git
+cd privatepay-agent
 npm install
 npm run build
 npm run demo:success
 npm run demo:blocked
+
 ```
 
 Expected shape without credentials:
