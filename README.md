@@ -50,13 +50,142 @@ path.
 Node.js 20.11 or newer. No credentials are needed for this path; every simulated value
 is labelled.
 
-```sh
+
+## Clone in 5 minutes
+
+No keys? Run Level A — everything is labeled `SIMULATED`.  
+Want the live path on our contracts? You need two keys (Level B):
+1. An agent Function Call Key (`NEAR_AGENT_KEY`)
+2. A NEAR AI Cloud key from the dashboard
+
+Want your own contracts? Create a testnet wallet at [wallet.intear.tech](https://wallet.intear.tech/) and run bootstrap (Level C).  
+See below for exact commands.
+
+---
+
+### Level A — Zero-Key Simulation (Simulated)
+
+* **Prerequisites:** None
+* **Commands:**
+
+
+```bash
 git clone https://github.com/Nassami1/privatepay-agent.git
 cd privatepay-agent
 npm install
-npm run build
 npm run demo:success
 npm run demo:blocked
+
+```
+
+* **Expected Output:** `source=local-simulation` and `attestation=SIMULATED`
+* **Note:** No real tokens or transactions are executed.
+
+---
+
+### Level B — Live Testnet Execution (Pre-deployed Contracts)
+
+#### Prerequisites
+
+* `NEAR_AGENT_KEY`: A Function Call key restricted to `try_pay` on this `POLICY_CONTRACT_ID` (not included in the repository; ignored by `.gitignore`).
+* `NEAR_AI_CLOUD_API_KEY`: Generated via [cloud.near.ai/dashboard](https://cloud.near.ai/dashboard) under **API Keys**.
+
+#### Commands
+
+```bash
+cp .env.example .env
+
+```
+
+Populate `.env` with the following:
+
+```env
+NEAR_NETWORK=testnet
+NEAR_ACCOUNT_ID=agent.samimmi.testnet
+NEAR_AGENT_KEY=ed25519:...
+POLICY_CONTRACT_ID=policy.samimmi.testnet
+NEAR_AI_CLOUD_API_KEY=sk-...
+NEAR_AI_CLOUD_BASE_URL=[https://cloud-api.near.ai](https://cloud-api.near.ai)
+NEAR_AI_CLOUD_MODEL=z-ai/glm-5.3-flash
+
+```
+
+Run verification and demo scripts:
+
+```bash
+npm run verify:key
+npm run verify:attestation
+npm run demo:success
+npm run demo:blocked
+
+```
+
+#### Expected Output
+
+* `verify:key` → `result=PASS`
+* `verify:attestation` → `mode=real` and `7/7`
+* `demo:success` → `attestation=OK` and `-> SUCCESS`
+
+#### Known Issues
+
+* `401 Invalid or expired API key`: The AI key is invalid or expired. Generate a fresh key from the dashboard.
+* `BLOCKED_DUPLICATE_INVOICE`: This `invoice_ref` has already been settled. Running `demo:reset` requires the owner key.
+
+---
+
+### Level C — Full Self-Hosted Deployment (Bootstrap)
+
+#### Prerequisites
+
+* Create a NEAR testnet wallet at [wallet.intear.tech](https://wallet.intear.tech/).
+* Save the owner account's Full Access private key to `.keys/owner.json`:
+
+```json
+{
+  "accountId": "your-owner.testnet",
+  "publicKey": "ed25519:...",
+  "secretKey": "ed25519:..."
+}
+
+```
+
+* Sufficient testnet NEAR to fund account creation (via faucet).
+* A NEAR AI Cloud key from [cloud.near.ai/dashboard](https://cloud.near.ai/dashboard).
+
+#### Commands
+
+```bash
+npm run contract:build
+npm run bootstrap:testnet
+npm run verify:key
+npm run verify:attestation
+npm run demo:success
+
+```
+
+> **Note:** `bootstrap:testnet` automatically provisions the `policy`, `agent`, and `usdc` token accounts, mints `1,000,000 tUSDC`, whitelists the receiver, and installs the restricted `try_pay` key. Public deployment addresses are written to `deployments/testnet.json` (no private keys are stored there).
+
+---
+
+### Important Links
+
+* **Testnet Wallet:** [https://wallet.intear.tech/](https://wallet.intear.tech/)
+* **Dashboard & API Keys:** [https://cloud.near.ai/dashboard](https://cloud.near.ai/dashboard)
+* **Official Documentation:** [https://docs.near.ai/cloud/quickstart](https://docs.near.ai/cloud/quickstart)
+* **Remote Attestation Verifier:** [https://cloud.near.ai/verify](https://cloud.near.ai/verify)
+
+---
+
+### Important Notes
+
+* `NEAR_AI_CLOUD_BASE_URL` points to `https://cloud-api.near.ai`. Note that `cloud.near.ai` hosts the dashboard, not the API gateway (the codebase supports both formats).
+* `demo:reset` requires the owner key and will fail on external machines unless configured via Level C.
+* Never commit `.env` or `.keys/` files.
+* This project is strictly **testnet-only**. Setting `NEAR_NETWORK` to any value other than `testnet` throws an error.
+
+ 
+
+```
 
 ```
 
